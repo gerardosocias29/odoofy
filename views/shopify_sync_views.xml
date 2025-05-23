@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+
+        <!-- Shopify Sync Tree View -->
+        <record id="view_shopify_sync_tree" model="ir.ui.view">
+            <field name="name">shopify.sync.tree</field>
+            <field name="model">shopify.sync</field>
+            <field name="arch" type="xml">
+                <tree string="Shopify Synchronization">
+                    <field name="name"/>
+                    <field name="sync_status"/>
+                    <field name="last_sync_date"/>
+                </tree>
+            </field>
+        </record>
+
+        <!-- Shopify Sync Form View -->
+        <record id="view_shopify_sync_form" model="ir.ui.view">
+            <field name="name">shopify.sync.form</field>
+            <field name="model">shopify.sync</field>
+            <field name="arch" type="xml">
+                <form string="Shopify Synchronization">
+                    <header>
+                        <button name="auto_sync_shopify_products"
+                                string="Sync Products from Shopify"
+                                type="object"
+                                class="btn-primary"
+                                groups="group_shopify_sync_manager"/>
+                        <button name="auto_sync_shopify_orders"
+                                string="Sync Orders from Shopify"
+                                type="object"
+                                class="btn-primary"
+                                groups="group_shopify_sync_manager"/>
+                        <button name="export_products_to_shopify"
+                                string="Export Products to Shopify"
+                                type="object"
+                                class="btn-secondary"
+                                groups="group_shopify_sync_manager"/>
+                        <button name="sync_inventory_to_shopify"
+                                string="Sync Inventory to Shopify"
+                                type="object"
+                                class="btn-secondary"
+                                groups="group_shopify_sync_manager"/>
+                        <button name="update_products_to_shopify"
+                                string="Update Products in Shopify"
+                                type="object"
+                                class="btn-secondary"
+                                groups="group_shopify_sync_manager"/>
+                        <field name="sync_status" widget="statusbar"/>
+                    </header>
+                    <sheet>
+                        <group>
+                            <group>
+                                <field name="name"/>
+                                <field name="last_sync_date"/>
+                                <field name="last_odoo_to_shopify_sync"/>
+                            </group>
+                            <group>
+                                <field name="sync_status"/>
+                            </group>
+                        </group>
+                        <notebook>
+                            <page string="Sync Log">
+                                <field name="sync_log" widget="text" readonly="1"/>
+                            </page>
+                        </notebook>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <!-- Shopify Sync Action -->
+        <record id="action_shopify_sync" model="ir.actions.act_window">
+            <field name="name">Shopify Synchronization</field>
+            <field name="res_model">shopify.sync</field>
+            <field name="view_mode">tree,form</field>
+            <field name="help" type="html">
+                <p class="o_view_nocontent_smiling_face">
+                    Create a new Shopify synchronization
+                </p>
+                <p>
+                    Manage synchronization between Shopify and Odoo for products, orders, and inventory.
+                </p>
+            </field>
+        </record>
+
+        <!-- Shopify Configuration Action -->
+        <record id="action_shopify_config_settings" model="ir.actions.act_window">
+            <field name="name">Shopify Configuration</field>
+            <field name="res_model">res.config.settings</field>
+            <field name="view_mode">form</field>
+            <field name="view_id" ref="shopify_config_settings_view_form"/>
+            <field name="target">inline</field>
+        </record>
+
+        <!-- Menu Items -->
+        <menuitem id="menu_shopify_root"
+                  name="Shopify Integration"
+                  sequence="100"
+                  groups="group_shopify_sync_user"/>
+
+        <menuitem id="menu_shopify_sync"
+                  name="Synchronization"
+                  parent="menu_shopify_root"
+                  action="action_shopify_sync"
+                  sequence="10"
+                  groups="group_shopify_sync_user"/>
+
+        <menuitem id="menu_shopify_config"
+                  name="Configuration"
+                  parent="menu_shopify_root"
+                  action="action_shopify_config_settings"
+                  sequence="20"
+                  groups="group_shopify_sync_manager"/>
+
+    </data>
+</odoo>

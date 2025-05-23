@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_shopify_sync_user,shopify.sync.user,model_shopify_sync,group_shopify_sync_user,1,0,0,0
+access_shopify_sync_manager,shopify.sync.manager,model_shopify_sync,group_shopify_sync_manager,1,1,1,1

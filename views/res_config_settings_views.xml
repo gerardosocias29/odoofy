@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+
+        <!-- Shopify Configuration Form View -->
+        <record id="shopify_config_settings_view_form" model="ir.ui.view">
+            <field name="name">shopify.config.settings.form</field>
+            <field name="model">res.config.settings</field>
+            <field name="arch" type="xml">
+                <form string="Shopify Configuration" class="oe_form_configuration">
+                    <header>
+                        <button string="Save" type="object" name="execute" class="oe_highlight"/>
+                        <button string="Cancel" type="object" name="cancel" class="oe_link"/>
+                    </header>
+                    <sheet>
+                        <div class="app_settings_block" data-string="Shopify Integration" string="Shopify Integration" data-key="shopify_sync">
+                            <h2>Shopify Integration</h2>
+
+                            <div class="row mt16 o_settings_container">
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="shopify_access_token"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="shopify_access_token"/>
+                                        <div class="text-muted">
+                                            Enter your Shopify Private App Access Token
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="shopify_store_url"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="shopify_store_url"/>
+                                        <div class="text-muted">
+                                            Your Shopify store URL (e.g., https://your-store.myshopify.com)
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="shopify_api_version"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="shopify_api_version"/>
+                                        <div class="text-muted">
+                                            Shopify API version to use (default: 2023-10)
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-12 o_setting_box">
+                                    <button name="test_shopify_connection"
+                                            string="Test Connection"
+                                            type="object"
+                                            class="btn-secondary"/>
+                                </div>
+                            </div>
+
+                            <h3>Synchronization Settings</h3>
+                            <div class="row mt16 o_settings_container">
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="shopify_auto_sync_products"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="shopify_auto_sync_products"/>
+                                        <div class="text-muted">
+                                            Automatically sync products from Shopify to Odoo
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="shopify_auto_sync_orders"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="shopify_auto_sync_orders"/>
+                                        <div class="text-muted">
+                                            Automatically sync orders from Shopify to Odoo
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="shopify_auto_export_products"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="shopify_auto_export_products"/>
+                                        <div class="text-muted">
+                                            Automatically export products from Odoo to Shopify
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+    </data>
+</odoo>
