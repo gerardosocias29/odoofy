@@ -128,7 +128,7 @@ class ShopifySync(models.Model):
             headers = self._get_shopify_headers()
             params = {
                 'limit': limit,
-                'fields': 'id,title,variants,images,product_type,created_at,vendor,handle,status'
+                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status'
             }
 
             if page_info:
@@ -208,6 +208,23 @@ class ShopifySync(models.Model):
             'detailed_type': 'product',
         }
 
+        # Check if auto-publish on website is enabled
+        config_param = self.env['ir.config_parameter'].sudo()
+        auto_publish = config_param.get_param('shopify.auto_publish_website', False)
+
+        if auto_publish:
+            # Only publish if product status is 'active' in Shopify
+            shopify_status = shopify_product.get('status', 'draft')
+            if shopify_status == 'active':
+                template_vals['is_published'] = True
+                self._log_sync_message(f"Auto-publishing product on website: {shopify_product['title']}")
+            else:
+                template_vals['is_published'] = False
+                self._log_sync_message(f"Product not published (Shopify status: {shopify_status}): {shopify_product['title']}")
+        else:
+            # Default to not published if auto-publish is disabled
+            template_vals['is_published'] = False
+
         # Store Shopify timestamps for sync tracking
         shopify_updated_at = shopify_product.get('updated_at')
         if shopify_updated_at:
@@ -240,6 +257,12 @@ class ShopifySync(models.Model):
         if existing_template:
             existing_template.sudo().write(template_vals)
             product_template = existing_template
+            # Log publication status change for existing products
+            if auto_publish and 'is_published' in template_vals:
+                if template_vals['is_published']:
+                    self._log_sync_message(f"Updated existing product publication status to published: {shopify_product['title']}")
+                else:
+                    self._log_sync_message(f"Updated existing product publication status to unpublished: {shopify_product['title']}")
         else:
             product_template = self.env['product.template'].sudo().create(template_vals)
 

@@ -98,6 +98,18 @@
                                         </div>
                                     </div>
                                 </div>
+
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="shopify_auto_publish_website"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="shopify_auto_publish_website"/>
+                                        <div class="text-muted">
+                                            Automatically publish products fetched from Shopify on the Odoo website
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </sheet>
