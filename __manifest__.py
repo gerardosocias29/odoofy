@@ -43,6 +43,9 @@ Each task is implemented as a one-time callable method to support CRON automatio
         'views/shopify_sync_views.xml',
         'data/ir_cron_data.xml',
     ],
+    'test': [
+        'tests/test_shopify_sync.py',
+    ],
     'installable': True,
     'application': True,
     'auto_install': False,

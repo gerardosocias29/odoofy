@@ -85,32 +85,42 @@ class ShopifySync(models.Model):
     @api.model
     def auto_sync_shopify_products(self):
         """Main method to sync Shopify products to Odoo"""
+        sync_record = None
         try:
-            self._log_sync_message("Starting Shopify products synchronization")
-            self.sync_status = 'running'
+            # Get or create sync record
+            sync_record = self.search([], limit=1)
+            if not sync_record:
+                sync_record = self.create({'name': 'Shopify Sync'})
+
+            sync_record._log_sync_message("Starting Shopify products synchronization")
+            sync_record.sync_status = 'running'
 
             config_param = self.env['ir.config_parameter'].sudo()
             next_page = config_param.get_param('shopify.next_page')
 
             if not next_page:
                 # First sync or reset - fetch products created this year
-                products, next_page_token = self.fetch_shopify_products(limit=10, created_this_year=True)
+                products, next_page_token = sync_record.fetch_shopify_products(limit=10, created_this_year=True)
                 config_param.set_param('shopify.next_page', next_page_token or '')
-                self.save_products_to_odoo(products)
+                sync_record.save_products_to_odoo(products)
             else:
                 # Continue pagination
-                products, next_page_token = self.fetch_shopify_products(limit=10, page_info=next_page)
+                products, next_page_token = sync_record.fetch_shopify_products(limit=10, page_info=next_page)
                 config_param.set_param('shopify.next_page', next_page_token or '')
-                self.save_products_to_odoo(products)
+                sync_record.save_products_to_odoo(products)
 
-            self.sync_status = 'completed'
-            self.last_sync_date = fields.Datetime.now()
-            self._log_sync_message(f"Successfully synced {len(products)} products")
+            sync_record.sync_status = 'completed'
+            sync_record.last_sync_date = fields.Datetime.now()
+            sync_record._log_sync_message(f"Successfully synced {len(products)} products")
 
         except Exception as e:
-            self.sync_status = 'error'
-            self._log_sync_message(f"Error during product sync: {str(e)}", 'error')
-            raise
+            if sync_record:
+                sync_record.sync_status = 'error'
+                sync_record._log_sync_message(f"Error during product sync: {str(e)}", 'error')
+            else:
+                _logger.error(f"Error during product sync: {str(e)}")
+            # Don't re-raise to prevent cron job from failing completely
+            return False
 
     def fetch_shopify_products(self, limit=10, page_info=None, created_this_year=False):
         """Fetch products from Shopify API"""
@@ -149,8 +159,10 @@ class ShopifySync(models.Model):
     def save_products_to_odoo(self, products):
         """Save Shopify products to Odoo"""
         for product in products:
+            # Use a savepoint for each product to isolate transaction errors
             try:
-                self._save_single_product(product)
+                with self.env.cr.savepoint():
+                    self._save_single_product(product)
             except Exception as e:
                 self._log_sync_message(f"Error saving product {product.get('title', 'Unknown')}: {str(e)}", 'error')
                 continue
@@ -247,13 +259,23 @@ class ShopifySync(models.Model):
         """Save product variant"""
         shopify_variant_id = str(variant['id'])
 
-        # Check if variant already exists
+        # Check if variant already exists by Shopify variant ID
         existing_variant = self.env['product.product'].sudo().search([
             ('default_code', '=', f"SHOPIFY_VAR_{shopify_variant_id}")
         ], limit=1)
 
+        # Also check if there's already a variant for this template to avoid combination conflicts
+        if not existing_variant:
+            existing_template_variants = self.env['product.product'].sudo().search([
+                ('product_tmpl_id', '=', product_template.id)
+            ])
+
+            # If template already has variants, use the first one and update it
+            if existing_template_variants:
+                existing_variant = existing_template_variants[0]
+                self._log_sync_message(f"Using existing variant for template {product_template.name}")
+
         variant_vals = {
-            'product_tmpl_id': product_template.id,
             'default_code': f"SHOPIFY_VAR_{shopify_variant_id}",
             'barcode': variant.get('barcode'),
             'list_price': float(variant.get('price', 0)),
@@ -262,10 +284,25 @@ class ShopifySync(models.Model):
         }
 
         if existing_variant:
+            # Update existing variant
             existing_variant.sudo().write(variant_vals)
             product_variant = existing_variant
         else:
-            product_variant = self.env['product.product'].sudo().create(variant_vals)
+            # Create new variant with template ID
+            variant_vals['product_tmpl_id'] = product_template.id
+            try:
+                product_variant = self.env['product.product'].sudo().create(variant_vals)
+            except Exception as e:
+                # If creation fails due to constraint, try to find and update existing variant
+                self._log_sync_message(f"Variant creation failed, attempting to find existing: {str(e)}", 'warning')
+                existing_variant = self.env['product.product'].sudo().search([
+                    ('product_tmpl_id', '=', product_template.id)
+                ], limit=1)
+                if existing_variant:
+                    existing_variant.sudo().write(variant_vals)
+                    product_variant = existing_variant
+                else:
+                    raise
 
         # Update inventory
         inventory_quantity = variant.get('inventory_quantity', 0)
@@ -337,32 +374,42 @@ class ShopifySync(models.Model):
     @api.model
     def auto_sync_shopify_orders(self):
         """Main method to sync Shopify orders to Odoo"""
+        sync_record = None
         try:
-            self._log_sync_message("Starting Shopify orders synchronization")
-            self.sync_status = 'running'
+            # Get or create sync record
+            sync_record = self.search([], limit=1)
+            if not sync_record:
+                sync_record = self.create({'name': 'Shopify Sync'})
+
+            sync_record._log_sync_message("Starting Shopify orders synchronization")
+            sync_record.sync_status = 'running'
 
             config_param = self.env['ir.config_parameter'].sudo()
             next_page = config_param.get_param('shopify.orders_next_page')
 
             if not next_page:
                 # First sync - fetch recent orders
-                orders, next_page_token = self.fetch_shopify_orders(limit=10)
+                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10)
                 config_param.set_param('shopify.orders_next_page', next_page_token or '')
-                self.save_orders_to_odoo(orders)
+                sync_record.save_orders_to_odoo(orders)
             else:
                 # Continue pagination
-                orders, next_page_token = self.fetch_shopify_orders(limit=10, page_info=next_page)
+                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10, page_info=next_page)
                 config_param.set_param('shopify.orders_next_page', next_page_token or '')
-                self.save_orders_to_odoo(orders)
+                sync_record.save_orders_to_odoo(orders)
 
-            self.sync_status = 'completed'
-            self.last_sync_date = fields.Datetime.now()
-            self._log_sync_message(f"Successfully synced {len(orders)} orders")
+            sync_record.sync_status = 'completed'
+            sync_record.last_sync_date = fields.Datetime.now()
+            sync_record._log_sync_message(f"Successfully synced {len(orders)} orders")
 
         except Exception as e:
-            self.sync_status = 'error'
-            self._log_sync_message(f"Error during order sync: {str(e)}", 'error')
-            raise
+            if sync_record:
+                sync_record.sync_status = 'error'
+                sync_record._log_sync_message(f"Error during order sync: {str(e)}", 'error')
+            else:
+                _logger.error(f"Error during order sync: {str(e)}")
+            # Don't re-raise to prevent cron job from failing completely
+            return False
 
     def fetch_shopify_orders(self, limit=10, page_info=None):
         """Fetch orders from Shopify API"""
@@ -398,8 +445,10 @@ class ShopifySync(models.Model):
     def save_orders_to_odoo(self, orders):
         """Save Shopify orders to Odoo"""
         for order in orders:
+            # Use a savepoint for each order to isolate transaction errors
             try:
-                self._save_single_order(order)
+                with self.env.cr.savepoint():
+                    self._save_single_order(order)
             except Exception as e:
                 self._log_sync_message(f"Error saving order {order.get('name', 'Unknown')}: {str(e)}", 'error')
                 continue
