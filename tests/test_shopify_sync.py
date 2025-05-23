@@ -216,3 +216,95 @@ class TestShopifySync(TransactionCase):
         ])
         self.assertTrue(product, "Product should be created")
         self.assertFalse(product.is_published, "Inactive product should not be published on website")
+
+    def test_no_duplicate_vendors(self):
+        """Test that vendors are not duplicated when syncing the same product multiple times"""
+
+        # Create a vendor first
+        vendor = self.env['res.partner'].create({
+            'name': 'Test Vendor',
+            'is_company': True,
+            'supplier_rank': 1,
+        })
+
+        # Mock Shopify product data
+        shopify_product = {
+            'id': 792,
+            'title': 'Vendor Test Product',
+            'status': 'active',
+            'variants': [{'id': 101115, 'price': '69.99'}],
+            'images': [],
+            'product_type': 'Test Category',
+            'vendor': 'Test Vendor'
+        }
+
+        # Save the product first time
+        self.shopify_sync._save_single_product(shopify_product)
+
+        # Check that product was created with vendor
+        product = self.env['product.template'].search([
+            ('default_code', '=', 'SHOPIFY_792')
+        ])
+        self.assertTrue(product, "Product should be created")
+        self.assertEqual(len(product.seller_ids), 1, "Product should have exactly one vendor")
+        self.assertEqual(product.seller_ids[0].partner_id.name, 'Test Vendor', "Vendor should be Test Vendor")
+
+        # Save the same product again (simulate re-sync)
+        self.shopify_sync._save_single_product(shopify_product)
+
+        # Refresh the product record
+        product.invalidate_recordset()
+
+        # Check that vendor was not duplicated
+        self.assertEqual(len(product.seller_ids), 1, "Product should still have exactly one vendor (no duplicates)")
+        self.assertEqual(product.seller_ids[0].partner_id.name, 'Test Vendor', "Vendor should still be Test Vendor")
+
+    def test_different_vendors_are_added(self):
+        """Test that different vendors can be added to the same product"""
+
+        # Create vendors
+        vendor1 = self.env['res.partner'].create({
+            'name': 'Vendor One',
+            'is_company': True,
+            'supplier_rank': 1,
+        })
+        vendor2 = self.env['res.partner'].create({
+            'name': 'Vendor Two',
+            'is_company': True,
+            'supplier_rank': 1,
+        })
+
+        # Mock Shopify product data with first vendor
+        shopify_product = {
+            'id': 793,
+            'title': 'Multi Vendor Test Product',
+            'status': 'active',
+            'variants': [{'id': 101116, 'price': '79.99'}],
+            'images': [],
+            'product_type': 'Test Category',
+            'vendor': 'Vendor One'
+        }
+
+        # Save the product with first vendor
+        self.shopify_sync._save_single_product(shopify_product)
+
+        # Check that product was created with first vendor
+        product = self.env['product.template'].search([
+            ('default_code', '=', 'SHOPIFY_793')
+        ])
+        self.assertTrue(product, "Product should be created")
+        self.assertEqual(len(product.seller_ids), 1, "Product should have exactly one vendor")
+        self.assertEqual(product.seller_ids[0].partner_id.name, 'Vendor One', "First vendor should be Vendor One")
+
+        # Update product with different vendor
+        shopify_product['vendor'] = 'Vendor Two'
+        self.shopify_sync._save_single_product(shopify_product)
+
+        # Refresh the product record
+        product.invalidate_recordset()
+
+        # Check that second vendor was added (not replaced)
+        self.assertEqual(len(product.seller_ids), 2, "Product should now have two vendors")
+        vendor_names = [seller.partner_id.name for seller in product.seller_ids]
+        self.assertIn('Vendor One', vendor_names, "First vendor should still be present")
+        self.assertIn('Vendor Two', vendor_names, "Second vendor should be added")
