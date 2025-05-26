@@ -308,3 +308,93 @@ class TestShopifySync(TransactionCase):
         vendor_names = [seller.partner_id.name for seller in product.seller_ids]
         self.assertIn('Vendor One', vendor_names, "First vendor should still be present")
         self.assertIn('Vendor Two', vendor_names, "Second vendor should be added")
+
+    def test_variant_linkage_to_template(self):
+        """Test that product variants are properly linked to their template"""
+
+        # Mock Shopify product data with multiple variants
+        shopify_product = {
+            'id': 794,
+            'title': 'Multi Variant Product',
+            'status': 'active',
+            'variants': [
+                {'id': 101117, 'price': '89.99', 'title': 'Small'},
+                {'id': 101118, 'price': '99.99', 'title': 'Medium'},
+                {'id': 101119, 'price': '109.99', 'title': 'Large'}
+            ],
+            'images': [],
+            'product_type': 'Test Category',
+            'vendor': 'Test Vendor'
+        }
+
+        # Save the product
+        self.shopify_sync._save_single_product(shopify_product)
+
+        # Check that product template was created
+        product_template = self.env['product.template'].search([
+            ('default_code', '=', 'SHOPIFY_794')
+        ])
+        self.assertTrue(product_template, "Product template should be created")
+
+        # Check that all variants are properly linked to the template
+        linked_variants = self.env['product.product'].search([
+            ('product_tmpl_id', '=', product_template.id)
+        ])
+
+        # Should have at least the variants we created
+        self.assertGreaterEqual(len(linked_variants), 3, "Template should have at least 3 linked variants")
+
+        # Check that Shopify variants exist and are linked
+        shopify_variants = self.env['product.product'].search([
+            ('default_code', 'in', ['SHOPIFY_VAR_101117', 'SHOPIFY_VAR_101118', 'SHOPIFY_VAR_101119'])
+        ])
+
+        self.assertEqual(len(shopify_variants), 3, "All 3 Shopify variants should be created")
+
+        # Verify each variant is linked to the correct template
+        for variant in shopify_variants:
+            self.assertEqual(variant.product_tmpl_id.id, product_template.id,
+                           f"Variant {variant.default_code} should be linked to template {product_template.name}")
+
+    def test_variant_update_preserves_linkage(self):
+        """Test that updating variants preserves their linkage to the template"""
+
+        # Create initial product
+        shopify_product = {
+            'id': 795,
+            'title': 'Update Test Product',
+            'status': 'active',
+            'variants': [{'id': 101120, 'price': '119.99'}],
+            'images': [],
+            'product_type': 'Test Category',
+            'vendor': 'Test Vendor'
+        }
+
+        # Save the product first time
+        self.shopify_sync._save_single_product(shopify_product)
+
+        # Get the created template and variant
+        product_template = self.env['product.template'].search([
+            ('default_code', '=', 'SHOPIFY_795')
+        ])
+        original_variant = self.env['product.product'].search([
+            ('default_code', '=', 'SHOPIFY_VAR_101120')
+        ])
+
+        self.assertTrue(product_template, "Product template should be created")
+        self.assertTrue(original_variant, "Product variant should be created")
+        self.assertEqual(original_variant.product_tmpl_id.id, product_template.id,
+                        "Variant should be linked to template")
+
+        # Update the product (simulate re-sync)
+        shopify_product['variants'][0]['price'] = '129.99'
+        self.shopify_sync._save_single_product(shopify_product)
+
+        # Refresh records
+        original_variant.invalidate_recordset()
+
+        # Verify linkage is preserved and price is updated
+        self.assertEqual(original_variant.product_tmpl_id.id, product_template.id,
+                        "Variant linkage should be preserved after update")
+        self.assertEqual(original_variant.list_price, 129.99,
+                        "Variant price should be updated")

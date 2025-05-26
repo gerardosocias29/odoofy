@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Shopify Configuration Parameters -->
+        <!-- These parameters are created with blank values when the addon is installed -->
+
+        <!-- Shopify Store URL -->
+        <record id="shopify_store_url_param" model="ir.config_parameter">
+            <field name="key">shopify.store_url</field>
+            <field name="value"></field>
+        </record>
+
+        <!-- Shopify Access Token -->
+        <record id="shopify_access_token_param" model="ir.config_parameter">
+            <field name="key">shopify.access_token</field>
+            <field name="value"></field>
+        </record>
+
+        <!-- Shopify API Version -->
+        <record id="shopify_api_version_param" model="ir.config_parameter">
+            <field name="key">shopify.api_version</field>
+            <field name="value">2023-10</field>
+        </record>
+
+        <!-- Auto Publish Website -->
+        <record id="shopify_auto_publish_website_param" model="ir.config_parameter">
+            <field name="key">shopify.auto_publish_website</field>
+            <field name="value">False</field>
+        </record>
+
+        <!-- Auto Sync Settings -->
+        <record id="shopify_auto_sync_products_param" model="ir.config_parameter">
+            <field name="key">shopify.auto_sync_products</field>
+            <field name="value">False</field>
+        </record>
+
+        <record id="shopify_auto_sync_orders_param" model="ir.config_parameter">
+            <field name="key">shopify.auto_sync_orders</field>
+            <field name="value">False</field>
+        </record>
+
+        <record id="shopify_auto_export_products_param" model="ir.config_parameter">
+            <field name="key">shopify.auto_export_products</field>
+            <field name="value">False</field>
+        </record>
+
+        <!-- Pagination Parameters (initialized as empty) -->
+        <record id="shopify_next_page_param" model="ir.config_parameter">
+            <field name="key">shopify.next_page</field>
+            <field name="value"></field>
+        </record>
+
+        <record id="shopify_orders_next_page_param" model="ir.config_parameter">
+            <field name="key">shopify.orders_next_page</field>
+            <field name="value"></field>
+        </record>
+
+        <!-- Last Sync Timestamp -->
+        <record id="shopify_last_odoo_to_shopify_sync_param" model="ir.config_parameter">
+            <field name="key">shopify.last_odoo_to_shopify_sync</field>
+            <field name="value"></field>
+        </record>
+
+        <!-- Total Products Count (cached) -->
+        <record id="shopify_total_products_count_param" model="ir.config_parameter">
+            <field name="key">shopify.total_products_count</field>
+            <field name="value"></field>
+        </record>
+
+        <!-- Total Orders Count (cached) -->
+        <record id="shopify_total_orders_count_param" model="ir.config_parameter">
+            <field name="key">shopify.total_orders_count</field>
+            <field name="value"></field>
+        </record>
+
+    </data>
+</odoo>

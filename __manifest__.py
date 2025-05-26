@@ -40,6 +40,7 @@ Each task is implemented as a one-time callable method to support CRON automatio
     'data': [
         'security/shopify_sync_security.xml',
         'security/ir.model.access.csv',
+        'data/ir_config_parameter_data.xml',
         'views/res_config_settings_views.xml',
         'views/shopify_sync_views.xml',
         'data/ir_cron_data.xml',
