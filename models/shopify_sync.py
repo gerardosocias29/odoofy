@@ -262,9 +262,18 @@ class ShopifySync(models.Model):
 
     def save_products_to_odoo(self, products):
         """Save Shopify products to Odoo"""
+        processed_ids = set()  # Track processed Shopify IDs to avoid duplicates in same sync
+
         for product in products:
             # Use a savepoint for each product to isolate transaction errors
             try:
+                shopify_id = str(product.get('id', ''))
+                if shopify_id in processed_ids:
+                    self._log_sync_message(f"Skipping duplicate product in same sync batch: {product.get('title', 'Unknown')} (ID: {shopify_id})", 'warning')
+                    continue
+
+                processed_ids.add(shopify_id)
+
                 with self.env.cr.savepoint():
                     self._save_single_product(product)
             except Exception as e:
@@ -295,20 +304,42 @@ class ShopifySync(models.Model):
                     'supplier_rank': 1,
                 })
 
-        # Check if product template already exists
+        # Check if product template already exists by Shopify ID (primary check)
         shopify_id = str(shopify_product['id'])
         existing_template = self.env['product.template'].sudo().search([
             ('default_code', '=', f"SHOPIFY_{shopify_id}")
         ], limit=1)
 
-        # Check if product with same name exists
-        existing_template_name = self.env['product.template'].sudo().search([
-            ('name', '=', shopify_product['title'])
-        ], limit=1)
+        # If no Shopify ID match, check by name (secondary check for manual products)
+        if not existing_template:
+            existing_template_name = self.env['product.template'].sudo().search([
+                ('name', '=', shopify_product['title']),
+                ('default_code', '=', False)  # Only check products without Shopify IDs
+            ], limit=1)
 
-        if existing_template_name and not existing_template:
-            self._log_sync_message(f"Product with name {shopify_product['title']} already exists, skipping creation", 'warning')
-            return
+            if existing_template_name:
+                # Update the existing product with Shopify ID to link it
+                existing_template_name.sudo().write({'default_code': f"SHOPIFY_{shopify_id}"})
+                existing_template = existing_template_name
+                self._log_sync_message(f"Linked existing product '{shopify_product['title']}' to Shopify ID {shopify_id}")
+            else:
+                # Check if there's already a Shopify product with the same name but different ID
+                duplicate_shopify_product = self.env['product.template'].sudo().search([
+                    ('name', '=', shopify_product['title']),
+                    ('default_code', 'like', 'SHOPIFY_%'),
+                    ('default_code', '!=', f"SHOPIFY_{shopify_id}")
+                ], limit=1)
+
+                if duplicate_shopify_product:
+                    self._log_sync_message(f"Product with same name but different Shopify ID already exists: {shopify_product['title']} (existing: {duplicate_shopify_product.default_code}, new: SHOPIFY_{shopify_id})", 'warning')
+                    # Skip this product to avoid creating duplicates
+                    self._log_sync_message(f"Skipping product {shopify_product['title']} to avoid duplicate creation")
+                    return
+
+        # Determine if this is an update or creation
+        is_update = bool(existing_template)
+        action_type = "Updating" if is_update else "Creating"
+        self._log_sync_message(f"{action_type} product: {shopify_product['title']} (Shopify ID: {shopify_id})")
 
         # Prepare product template data
         template_vals = {
@@ -398,31 +429,53 @@ class ShopifySync(models.Model):
                 self._log_sync_message(f"Error setting dropshipping route: {str(e)}", 'warning')
 
         if existing_template:
-            existing_template.sudo().write(template_vals)
-            product_template = existing_template
+            # Update existing product
+            try:
+                existing_template.sudo().write(template_vals)
+                product_template = existing_template
+                self._log_sync_message(f"Successfully updated product template: {shopify_product['title']}")
 
-            # Handle vendor addition for existing products (after template update)
-            if vendor and not vendor_already_exists:
-                try:
-                    # Create vendor line for existing product
-                    self.env['product.supplierinfo'].sudo().create({
-                        'partner_id': vendor.id,
-                        'product_tmpl_id': product_template.id,
-                        'min_qty': 1,
-                        'price': 0,  # Will be updated from variant data
-                    })
-                    self._log_sync_message(f"Added vendor {vendor_name} to existing product {shopify_product['title']}")
-                except Exception as e:
-                    self._log_sync_message(f"Error adding vendor to existing product: {str(e)}", 'warning')
+                # Handle vendor addition for existing products (after template update)
+                if vendor and not vendor_already_exists:
+                    try:
+                        # Double-check if vendor was already added to avoid duplicates
+                        existing_supplier = self.env['product.supplierinfo'].sudo().search([
+                            ('partner_id', '=', vendor.id),
+                            ('product_tmpl_id', '=', product_template.id)
+                        ], limit=1)
 
-            # Log publication status change for existing products
-            if auto_publish and 'is_published' in template_vals:
-                if template_vals['is_published']:
-                    self._log_sync_message(f"Updated existing product publication status to published: {shopify_product['title']}")
-                else:
-                    self._log_sync_message(f"Updated existing product publication status to unpublished: {shopify_product['title']}")
+                        if not existing_supplier:
+                            # Create vendor line for existing product
+                            self.env['product.supplierinfo'].sudo().create({
+                                'partner_id': vendor.id,
+                                'product_tmpl_id': product_template.id,
+                                'min_qty': 1,
+                                'price': 0,  # Will be updated from variant data
+                            })
+                            self._log_sync_message(f"Added vendor {vendor_name} to existing product {shopify_product['title']}")
+                        else:
+                            self._log_sync_message(f"Vendor {vendor_name} already exists for product {shopify_product['title']}")
+                    except Exception as e:
+                        self._log_sync_message(f"Error adding vendor to existing product: {str(e)}", 'warning')
+
+                # Log publication status change for existing products
+                if auto_publish and 'is_published' in template_vals:
+                    if template_vals['is_published']:
+                        self._log_sync_message(f"Updated existing product publication status to published: {shopify_product['title']}")
+                    else:
+                        self._log_sync_message(f"Updated existing product publication status to unpublished: {shopify_product['title']}")
+
+            except Exception as e:
+                self._log_sync_message(f"Error updating existing product template: {str(e)}", 'error')
+                raise
         else:
-            product_template = self.env['product.template'].sudo().create(template_vals)
+            # Create new product
+            try:
+                product_template = self.env['product.template'].sudo().create(template_vals)
+                self._log_sync_message(f"Successfully created new product template: {shopify_product['title']}")
+            except Exception as e:
+                self._log_sync_message(f"Error creating new product template: {str(e)}", 'error')
+                raise
 
         # Handle variants
         variants = shopify_product.get('variants', [])
@@ -442,8 +495,100 @@ class ShopifySync(models.Model):
 
         self._log_sync_message(f"Saved product: {shopify_product['title']}")
 
+    def _process_variant_attributes(self, variant, product_template, shopify_product=None):
+        """Process Shopify variant attributes and create/link them in Odoo"""
+        attribute_value_ids = []
+
+        try:
+            # Shopify variants have option1, option2, option3 fields
+            variant_options = []
+            for i in range(1, 4):  # option1, option2, option3
+                option_value = variant.get(f'option{i}')
+                if option_value and option_value.lower() != 'default title':
+                    variant_options.append((i, option_value))
+
+            if not variant_options:
+                # No variant options, this is a simple product
+                return attribute_value_ids
+
+            # Get attribute names from Shopify product options if available
+            option_names = {}
+            if shopify_product and 'options' in shopify_product:
+                for option in shopify_product['options']:
+                    position = option.get('position', 1)
+                    name = option.get('name', f'Option {position}')
+                    option_names[position] = name
+
+            # Get or create product attributes and values
+            for option_index, option_value in variant_options:
+                # Use meaningful attribute name from Shopify or fallback
+                attribute_name = option_names.get(option_index, f"Shopify Option {option_index}")
+
+                # Get or create the product attribute
+                product_attribute = self.env['product.attribute'].sudo().search([
+                    ('name', '=', attribute_name)
+                ], limit=1)
+
+                if not product_attribute:
+                    product_attribute = self.env['product.attribute'].sudo().create({
+                        'name': attribute_name,
+                        'display_type': 'radio',  # or 'select'
+                        'create_variant': 'always'
+                    })
+                    self._log_sync_message(f"Created product attribute: {attribute_name}")
+
+                # Get or create the attribute value
+                attribute_value = self.env['product.attribute.value'].sudo().search([
+                    ('attribute_id', '=', product_attribute.id),
+                    ('name', '=', option_value)
+                ], limit=1)
+
+                if not attribute_value:
+                    attribute_value = self.env['product.attribute.value'].sudo().create({
+                        'attribute_id': product_attribute.id,
+                        'name': option_value
+                    })
+                    self._log_sync_message(f"Created attribute value: {option_value} for {attribute_name}")
+
+                # Check if this attribute is already linked to the product template
+                template_attribute = self.env['product.template.attribute.line'].sudo().search([
+                    ('product_tmpl_id', '=', product_template.id),
+                    ('attribute_id', '=', product_attribute.id)
+                ], limit=1)
+
+                if not template_attribute:
+                    # Link the attribute to the product template
+                    template_attribute = self.env['product.template.attribute.line'].sudo().create({
+                        'product_tmpl_id': product_template.id,
+                        'attribute_id': product_attribute.id,
+                        'value_ids': [(6, 0, [attribute_value.id])]
+                    })
+                    self._log_sync_message(f"Linked attribute {attribute_name} to product template")
+                else:
+                    # Add the value to existing attribute line if not already there
+                    if attribute_value.id not in template_attribute.value_ids.ids:
+                        template_attribute.sudo().write({
+                            'value_ids': [(4, attribute_value.id)]
+                        })
+                        self._log_sync_message(f"Added value {option_value} to existing attribute {attribute_name}")
+
+                # Get the product template attribute value (the link between template and attribute value)
+                template_attribute_value = self.env['product.template.attribute.value'].sudo().search([
+                    ('product_tmpl_id', '=', product_template.id),
+                    ('attribute_id', '=', product_attribute.id),
+                    ('product_attribute_value_id', '=', attribute_value.id)
+                ], limit=1)
+
+                if template_attribute_value:
+                    attribute_value_ids.append(template_attribute_value.id)
+
+        except Exception as e:
+            self._log_sync_message(f"Error processing variant attributes: {str(e)}", 'warning')
+
+        return attribute_value_ids
+
     def _save_product_variant(self, product_template, variant, shopify_product=None):
-        """Save product variant"""
+        """Save product variant with proper attributes"""
         shopify_variant_id = str(variant['id'])
 
         # Check if variant already exists by Shopify variant ID
@@ -451,13 +596,40 @@ class ShopifySync(models.Model):
             ('default_code', '=', f"SHOPIFY_VAR_{shopify_variant_id}")
         ], limit=1)
 
+        # Handle variant attributes from Shopify
+        attribute_value_ids = self._process_variant_attributes(variant, product_template, shopify_product)
+
+        # Handle barcode carefully to avoid duplicates
+        shopify_barcode = variant.get('barcode')
+        barcode_to_use = None
+
+        if shopify_barcode:
+            # Check if this barcode is already used by another product
+            existing_barcode_product = self.env['product.product'].sudo().search([
+                ('barcode', '=', shopify_barcode),
+                ('id', '!=', existing_variant.id if existing_variant else 0)
+            ], limit=1)
+
+            if existing_barcode_product:
+                self._log_sync_message(f"Barcode {shopify_barcode} already used by product {existing_barcode_product.name}, skipping barcode assignment", 'warning')
+                barcode_to_use = None
+            else:
+                barcode_to_use = shopify_barcode
+
         variant_vals = {
             'default_code': f"SHOPIFY_VAR_{shopify_variant_id}",
-            'barcode': variant.get('barcode'),
             'list_price': float(variant.get('price', 0)),
             'standard_price': float(variant.get('compare_at_price', 0)) if variant.get('compare_at_price') else float(variant.get('price', 0)),
             'weight': float(variant.get('weight', 0)),
         }
+
+        # Only set barcode if it's safe to do so
+        if barcode_to_use:
+            variant_vals['barcode'] = barcode_to_use
+
+        # Add attribute values if any were processed
+        if attribute_value_ids:
+            variant_vals['product_template_attribute_value_ids'] = [(6, 0, attribute_value_ids)]
 
         if existing_variant:
             # Check if the existing variant is already linked to the correct template
@@ -515,62 +687,49 @@ class ShopifySync(models.Model):
                             self._log_sync_message(f"Could not update variant at all, using as-is: {str(e2)}", 'warning')
                             product_variant = existing_variant
         else:
-            # Create new variant with template ID
-            variant_vals['product_tmpl_id'] = product_template.id
+            # For new variants, check if the template already has a default variant we can use
+            existing_template_variant = self.env['product.product'].sudo().search([
+                ('product_tmpl_id', '=', product_template.id)
+            ], limit=1)
 
-            # Handle potential constraint violations more gracefully
-            try:
-                product_variant = self.env['product.product'].sudo().create(variant_vals)
-                self._log_sync_message(f"Created new variant {shopify_variant_id} for product {product_template.name}")
-            except Exception as e:
-                # If creation fails, check if it's due to existing default variant
-                self._log_sync_message(f"Variant creation failed: {str(e)}", 'warning')
-
-                # Try to find the default variant for this template and update it
-                default_variant = self.env['product.product'].sudo().search([
-                    ('product_tmpl_id', '=', product_template.id),
-                    ('default_code', '=', False)  # Default variant usually has no default_code
-                ], limit=1)
-
-                if default_variant:
-                    # Update the default variant with our Shopify data
-                    try:
-                        default_variant.sudo().write(variant_vals)
-                        product_variant = default_variant
-                        self._log_sync_message(f"Updated default variant with Shopify data for product {product_template.name}")
-                    except Exception as e2:
-                        # Even updating default variant failed, use it as-is
-                        self._log_sync_message(f"Could not update default variant, using as-is: {str(e2)}", 'warning')
-                        product_variant = default_variant
-                else:
-                    # Try to find any variant for this template
-                    any_variant = self.env['product.product'].sudo().search([
+            if existing_template_variant:
+                # Template already has a variant (probably the auto-created default one)
+                # Update it with our Shopify data instead of creating a new one
+                try:
+                    existing_template_variant.sudo().write(variant_vals)
+                    product_variant = existing_template_variant
+                    self._log_sync_message(f"Updated existing template variant {existing_template_variant.id} with Shopify data for product {product_template.name}")
+                except Exception as e:
+                    # If update fails, use the variant as-is
+                    self._log_sync_message(f"Could not update template variant, using as-is: {str(e)}", 'warning')
+                    product_variant = existing_template_variant
+            else:
+                # No existing variant, safe to create new one
+                try:
+                    variant_vals['product_tmpl_id'] = product_template.id
+                    product_variant = self.env['product.product'].sudo().create(variant_vals)
+                    self._log_sync_message(f"Created new variant {shopify_variant_id} for product {product_template.name}")
+                except Exception as e:
+                    # Creation failed, this shouldn't happen but handle it gracefully
+                    self._log_sync_message(f"Variant creation failed unexpectedly: {str(e)}", 'error')
+                    # Try to find any variant that might have been created
+                    fallback_variant = self.env['product.product'].sudo().search([
                         ('product_tmpl_id', '=', product_template.id)
                     ], limit=1)
-
-                    if any_variant:
-                        # Update existing variant
-                        try:
-                            any_variant.sudo().write(variant_vals)
-                            product_variant = any_variant
-                            self._log_sync_message(f"Updated existing template variant with Shopify data for product {product_template.name}")
-                        except Exception as e3:
-                            # Even updating any variant failed, use it as-is
-                            self._log_sync_message(f"Could not update any variant, using as-is: {str(e3)}", 'warning')
-                            product_variant = any_variant
+                    if fallback_variant:
+                        product_variant = fallback_variant
+                        self._log_sync_message(f"Using fallback variant {fallback_variant.id}")
                     else:
-                        # No variants exist for this template, this is unusual
-                        # Create a minimal variant without Shopify data to avoid constraint issues
+                        # Last resort: create minimal variant
                         try:
                             minimal_variant = self.env['product.product'].sudo().create({
                                 'product_tmpl_id': product_template.id,
                                 'default_code': f"SHOPIFY_VAR_{shopify_variant_id}",
                             })
                             product_variant = minimal_variant
-                            self._log_sync_message(f"Created minimal variant for product {product_template.name}")
-                        except Exception as e4:
-                            # Even minimal creation failed, this is a serious issue
-                            self._log_sync_message(f"Could not create any variant: {str(e4)}", 'error')
+                            self._log_sync_message(f"Created minimal fallback variant for product {product_template.name}")
+                        except Exception as e2:
+                            self._log_sync_message(f"Could not create any variant: {str(e2)}", 'error')
                             raise
 
         # Verify the variant is properly linked
@@ -689,14 +848,14 @@ class ShopifySync(models.Model):
                 # First sync - fetch recent orders
                 current_page = 1
                 config_param.set_param('shopify.orders_current_page', str(current_page))
-                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10, page_number=current_page)
+                orders, next_page_token = sync_record.fetch_shopify_orders(limit=50, page_number=current_page)
                 config_param.set_param('shopify.orders_next_page', next_page_token or '')
                 sync_record.save_orders_to_odoo(orders)
             else:
                 # Continue pagination
                 current_page += 1
                 config_param.set_param('shopify.orders_current_page', str(current_page))
-                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10, page_info=next_page, page_number=current_page)
+                orders, next_page_token = sync_record.fetch_shopify_orders(limit=50, page_info=next_page, page_number=current_page)
                 config_param.set_param('shopify.orders_next_page', next_page_token or '')
                 sync_record.save_orders_to_odoo(orders)
 
@@ -718,7 +877,7 @@ class ShopifySync(models.Model):
             # Don't re-raise to prevent cron job from failing completely
             return False
 
-    def fetch_shopify_orders(self, limit=10, page_info=None, page_number=1):
+    def fetch_shopify_orders(self, limit=50, page_info=None, page_number=1):
         """Fetch orders from Shopify API"""
         try:
             headers = self._get_shopify_headers()
