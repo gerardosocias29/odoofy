@@ -55,6 +55,17 @@
             <field name="value"></field>
         </record>
 
+        <!-- Page Number Tracking -->
+        <record id="shopify_current_page_param" model="ir.config_parameter">
+            <field name="key">shopify.current_page</field>
+            <field name="value">0</field>
+        </record>
+
+        <record id="shopify_orders_current_page_param" model="ir.config_parameter">
+            <field name="key">shopify.orders_current_page</field>
+            <field name="value">0</field>
+        </record>
+
         <!-- Last Sync Timestamp -->
         <record id="shopify_last_odoo_to_shopify_sync_param" model="ir.config_parameter">
             <field name="key">shopify.last_odoo_to_shopify_sync</field>

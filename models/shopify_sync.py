@@ -97,21 +97,31 @@ class ShopifySync(models.Model):
 
             config_param = self.env['ir.config_parameter'].sudo()
             next_page = config_param.get_param('shopify.next_page')
+            current_page = int(config_param.get_param('shopify.current_page', '0'))
 
             if not next_page:
                 # First sync or reset - fetch products created this year
-                products, next_page_token = sync_record.fetch_shopify_products(limit=10, created_this_year=True)
+                current_page = 1
+                config_param.set_param('shopify.current_page', str(current_page))
+                products, next_page_token = sync_record.fetch_shopify_products(limit=10, created_this_year=True, page_number=current_page)
                 config_param.set_param('shopify.next_page', next_page_token or '')
                 sync_record.save_products_to_odoo(products)
             else:
                 # Continue pagination
-                products, next_page_token = sync_record.fetch_shopify_products(limit=10, page_info=next_page)
+                current_page += 1
+                config_param.set_param('shopify.current_page', str(current_page))
+                products, next_page_token = sync_record.fetch_shopify_products(limit=10, page_info=next_page, page_number=current_page)
                 config_param.set_param('shopify.next_page', next_page_token or '')
                 sync_record.save_products_to_odoo(products)
 
             sync_record.sync_status = 'completed'
             sync_record.last_sync_date = fields.Datetime.now()
             sync_record._log_sync_message(f"Successfully synced {len(products)} products")
+
+            # If no more pages, reset pagination for next sync cycle
+            if not next_page_token:
+                config_param.set_param('shopify.current_page', '0')
+                sync_record._log_sync_message("Completed all pages, pagination reset for next sync cycle")
 
         except Exception as e:
             if sync_record:
@@ -122,7 +132,7 @@ class ShopifySync(models.Model):
             # Don't re-raise to prevent cron job from failing completely
             return False
 
-    def fetch_shopify_products(self, limit=10, page_info=None, created_this_year=False):
+    def fetch_shopify_products(self, limit=10, page_info=None, created_this_year=False, page_number=1):
         """Fetch products from Shopify API"""
         try:
             headers = self._get_shopify_headers()
@@ -151,9 +161,9 @@ class ShopifySync(models.Model):
             current_count = self._get_current_synced_count()
 
             if total_count:
-                self._log_sync_message(f"Fetched {len(products)} of {total_count} products from Shopify (Progress: {current_count + len(products)}/{total_count})")
+                self._log_sync_message(f"Page {page_number}: Fetched {len(products)} of {total_count} products from Shopify (Progress: {current_count + len(products)}/{total_count})")
             else:
-                self._log_sync_message(f"Fetched {len(products)} products from Shopify")
+                self._log_sync_message(f"Page {page_number}: Fetched {len(products)} products from Shopify")
 
             return products, next_page_token
 
@@ -453,9 +463,15 @@ class ShopifySync(models.Model):
             # Check if the existing variant is already linked to the correct template
             if existing_variant.product_tmpl_id.id == product_template.id:
                 # Same template, safe to update
-                existing_variant.sudo().write(variant_vals)
-                product_variant = existing_variant
-                self._log_sync_message(f"Updated existing variant {shopify_variant_id} for product {product_template.name}")
+                try:
+                    existing_variant.sudo().write(variant_vals)
+                    product_variant = existing_variant
+                    self._log_sync_message(f"Updated existing variant {shopify_variant_id} for product {product_template.name}")
+                except Exception as e:
+                    # Even updating the same template can cause constraint violations
+                    self._log_sync_message(f"Error updating existing variant: {str(e)}", 'warning')
+                    # Try to find another variant to update or use the existing one as-is
+                    product_variant = existing_variant
             else:
                 # Different template - this could cause constraint violation
                 # Check if there's already a variant for this template that we can use
@@ -472,9 +488,14 @@ class ShopifySync(models.Model):
 
                 if template_variant:
                     # Update the existing template variant with Shopify data
-                    template_variant.sudo().write(variant_vals)
-                    product_variant = template_variant
-                    self._log_sync_message(f"Updated template variant {template_variant.id} with Shopify data for product {product_template.name}")
+                    try:
+                        template_variant.sudo().write(variant_vals)
+                        product_variant = template_variant
+                        self._log_sync_message(f"Updated template variant {template_variant.id} with Shopify data for product {product_template.name}")
+                    except Exception as e:
+                        # If updating template variant fails, just use it as-is
+                        self._log_sync_message(f"Could not update template variant, using as-is: {str(e)}", 'warning')
+                        product_variant = template_variant
                 else:
                     # No existing variant for this template, try to create new one
                     try:
@@ -486,8 +507,13 @@ class ShopifySync(models.Model):
                         self._log_sync_message(f"Could not create new variant, updating existing: {str(e)}", 'warning')
                         # Remove product_tmpl_id from vals to avoid constraint violation
                         variant_vals_safe = {k: v for k, v in variant_vals.items() if k != 'product_tmpl_id'}
-                        existing_variant.sudo().write(variant_vals_safe)
-                        product_variant = existing_variant
+                        try:
+                            existing_variant.sudo().write(variant_vals_safe)
+                            product_variant = existing_variant
+                        except Exception as e2:
+                            # Even safe update failed, just use existing variant as-is
+                            self._log_sync_message(f"Could not update variant at all, using as-is: {str(e2)}", 'warning')
+                            product_variant = existing_variant
         else:
             # Create new variant with template ID
             variant_vals['product_tmpl_id'] = product_template.id
@@ -508,9 +534,14 @@ class ShopifySync(models.Model):
 
                 if default_variant:
                     # Update the default variant with our Shopify data
-                    default_variant.sudo().write(variant_vals)
-                    product_variant = default_variant
-                    self._log_sync_message(f"Updated default variant with Shopify data for product {product_template.name}")
+                    try:
+                        default_variant.sudo().write(variant_vals)
+                        product_variant = default_variant
+                        self._log_sync_message(f"Updated default variant with Shopify data for product {product_template.name}")
+                    except Exception as e2:
+                        # Even updating default variant failed, use it as-is
+                        self._log_sync_message(f"Could not update default variant, using as-is: {str(e2)}", 'warning')
+                        product_variant = default_variant
                 else:
                     # Try to find any variant for this template
                     any_variant = self.env['product.product'].sudo().search([
@@ -519,12 +550,28 @@ class ShopifySync(models.Model):
 
                     if any_variant:
                         # Update existing variant
-                        any_variant.sudo().write(variant_vals)
-                        product_variant = any_variant
-                        self._log_sync_message(f"Updated existing template variant with Shopify data for product {product_template.name}")
+                        try:
+                            any_variant.sudo().write(variant_vals)
+                            product_variant = any_variant
+                            self._log_sync_message(f"Updated existing template variant with Shopify data for product {product_template.name}")
+                        except Exception as e3:
+                            # Even updating any variant failed, use it as-is
+                            self._log_sync_message(f"Could not update any variant, using as-is: {str(e3)}", 'warning')
+                            product_variant = any_variant
                     else:
-                        # Last resort: re-raise the exception
-                        raise
+                        # No variants exist for this template, this is unusual
+                        # Create a minimal variant without Shopify data to avoid constraint issues
+                        try:
+                            minimal_variant = self.env['product.product'].sudo().create({
+                                'product_tmpl_id': product_template.id,
+                                'default_code': f"SHOPIFY_VAR_{shopify_variant_id}",
+                            })
+                            product_variant = minimal_variant
+                            self._log_sync_message(f"Created minimal variant for product {product_template.name}")
+                        except Exception as e4:
+                            # Even minimal creation failed, this is a serious issue
+                            self._log_sync_message(f"Could not create any variant: {str(e4)}", 'error')
+                            raise
 
         # Verify the variant is properly linked
         if product_variant.product_tmpl_id.id != product_template.id:
@@ -636,21 +683,31 @@ class ShopifySync(models.Model):
 
             config_param = self.env['ir.config_parameter'].sudo()
             next_page = config_param.get_param('shopify.orders_next_page')
+            current_page = int(config_param.get_param('shopify.orders_current_page', '0'))
 
             if not next_page:
                 # First sync - fetch recent orders
-                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10)
+                current_page = 1
+                config_param.set_param('shopify.orders_current_page', str(current_page))
+                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10, page_number=current_page)
                 config_param.set_param('shopify.orders_next_page', next_page_token or '')
                 sync_record.save_orders_to_odoo(orders)
             else:
                 # Continue pagination
-                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10, page_info=next_page)
+                current_page += 1
+                config_param.set_param('shopify.orders_current_page', str(current_page))
+                orders, next_page_token = sync_record.fetch_shopify_orders(limit=10, page_info=next_page, page_number=current_page)
                 config_param.set_param('shopify.orders_next_page', next_page_token or '')
                 sync_record.save_orders_to_odoo(orders)
 
             sync_record.sync_status = 'completed'
             sync_record.last_sync_date = fields.Datetime.now()
             sync_record._log_sync_message(f"Successfully synced {len(orders)} orders")
+
+            # If no more pages, reset pagination for next sync cycle
+            if not next_page_token:
+                config_param.set_param('shopify.orders_current_page', '0')
+                sync_record._log_sync_message("Completed all order pages, pagination reset for next sync cycle")
 
         except Exception as e:
             if sync_record:
@@ -661,7 +718,7 @@ class ShopifySync(models.Model):
             # Don't re-raise to prevent cron job from failing completely
             return False
 
-    def fetch_shopify_orders(self, limit=10, page_info=None):
+    def fetch_shopify_orders(self, limit=10, page_info=None, page_number=1):
         """Fetch orders from Shopify API"""
         try:
             headers = self._get_shopify_headers()
@@ -687,9 +744,9 @@ class ShopifySync(models.Model):
             current_count = self._get_current_synced_orders_count()
 
             if total_count:
-                self._log_sync_message(f"Fetched {len(orders)} of {total_count} orders from Shopify (Progress: {current_count + len(orders)}/{total_count})")
+                self._log_sync_message(f"Page {page_number}: Fetched {len(orders)} of {total_count} orders from Shopify (Progress: {current_count + len(orders)}/{total_count})")
             else:
-                self._log_sync_message(f"Fetched {len(orders)} orders from Shopify")
+                self._log_sync_message(f"Page {page_number}: Fetched {len(orders)} orders from Shopify")
 
             return orders, next_page_token
 
