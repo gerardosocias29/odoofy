@@ -96,32 +96,47 @@ class ShopifySync(models.Model):
             sync_record.sync_status = 'running'
 
             config_param = self.env['ir.config_parameter'].sudo()
-            next_page = config_param.get_param('shopify.next_page')
-            current_page = int(config_param.get_param('shopify.current_page', '0'))
+            last_updated_at = config_param.get_param('shopify.last_updated_at')
 
-            if not next_page:
-                # First sync or reset - fetch products created this year
-                current_page = 1
-                config_param.set_param('shopify.current_page', str(current_page))
-                products, next_page_token = sync_record.fetch_shopify_products(limit=10, created_this_year=True, page_number=current_page)
-                config_param.set_param('shopify.next_page', next_page_token or '')
-                sync_record.save_products_to_odoo(products)
+            # Fetch only ONE batch per cron run to avoid timeouts
+            if not last_updated_at:
+                # First sync - fetch products created this year (single batch)
+                sync_record._log_sync_message("First sync: fetching single batch of products created this year")
+                products = sync_record.fetch_single_batch_products(limit=10, created_this_year=True)
             else:
-                # Continue pagination
-                current_page += 1
-                config_param.set_param('shopify.current_page', str(current_page))
-                products, next_page_token = sync_record.fetch_shopify_products(limit=10, page_info=next_page, page_number=current_page)
-                config_param.set_param('shopify.next_page', next_page_token or '')
+                # Incremental sync - fetch products updated since last sync (single batch)
+                sync_record._log_sync_message(f"Incremental sync: fetching single batch updated since {last_updated_at}")
+                products = sync_record.fetch_single_batch_products(limit=10, updated_at_min=last_updated_at)
+
+            if products:
+                # Process this single batch
                 sync_record.save_products_to_odoo(products)
+
+                # Update timestamp to latest product in this batch
+                latest_updated_at = max(product.get('updated_at', '') for product in products)
+                if latest_updated_at:
+                    # If timestamp is the same as before, add 1 second to move past duplicate timestamps
+                    if latest_updated_at == last_updated_at:
+                        from datetime import datetime, timedelta
+                        try:
+                            dt = datetime.fromisoformat(latest_updated_at.replace('Z', '+00:00'))
+                            dt += timedelta(seconds=1)
+                            latest_updated_at = dt.isoformat().replace('+00:00', 'Z')
+                            sync_record._log_sync_message(f"Incremented timestamp by 1 second to avoid duplicate: {latest_updated_at}")
+                        except:
+                            # If parsing fails, just use the original timestamp
+                            pass
+
+                    config_param.set_param('shopify.last_updated_at', latest_updated_at)
+                    sync_record._log_sync_message(f"Updated last sync timestamp to: {latest_updated_at}")
+
+                sync_record._log_sync_message(f"Processed batch: {len(products)} products. Next cron run will continue from {latest_updated_at}")
+            else:
+                sync_record._log_sync_message("No products to sync in this batch")
 
             sync_record.sync_status = 'completed'
             sync_record.last_sync_date = fields.Datetime.now()
-            sync_record._log_sync_message(f"Successfully synced {len(products)} products")
-
-            # If no more pages, reset pagination for next sync cycle
-            if not next_page_token:
-                config_param.set_param('shopify.current_page', '0')
-                sync_record._log_sync_message("Completed all pages, pagination reset for next sync cycle")
+            sync_record._log_sync_message(f"Successfully synced {len(products) if products else 0} products in this batch")
 
         except Exception as e:
             if sync_record:
@@ -132,40 +147,207 @@ class ShopifySync(models.Model):
             # Don't re-raise to prevent cron job from failing completely
             return False
 
-    def fetch_shopify_products(self, limit=10, page_info=None, created_this_year=False, page_number=1):
-        """Fetch products from Shopify API"""
+    def fetch_single_batch_products(self, limit=10, created_this_year=False, updated_at_min=None):
+        """Fetch a SINGLE batch of products (one API call) to avoid timeouts"""
         try:
             headers = self._get_shopify_headers()
             params = {
                 'limit': limit,
-                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status'
+                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
             }
 
-            if page_info:
-                params['page_info'] = page_info
-
-            if created_this_year:
+            if updated_at_min:
+                # Incremental sync - get products updated since last sync
+                params['updated_at_min'] = updated_at_min
+                sync_type = "incremental"
+            elif created_this_year:
+                # First sync - get products created this year
                 current_year = fields.Date.today().year
                 params['created_at_min'] = f"{current_year}-01-01T00:00:00Z"
+                sync_type = "initial (this year)"
+            else:
+                sync_type = "full"
 
+            # Make ONLY ONE API call
             url = self._get_shopify_url('products.json')
+            self._log_sync_message(f"Making single API call for {sync_type} sync...")
             response = requests.get(url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
 
             data = response.json()
             products = data.get('products', [])
-            next_page_token = self.parse_next_page_token(response.headers.get('Link'))
 
-            # Get total count and current progress
-            total_count = self._get_total_products_count(created_this_year)
-            current_count = self._get_current_synced_count()
+            self._log_sync_message(f"Fetched {len(products)} products in single batch ({sync_type} sync)")
+            return products
 
-            if total_count:
-                self._log_sync_message(f"Page {page_number}: Fetched {len(products)} of {total_count} products from Shopify (Progress: {current_count + len(products)}/{total_count})")
+        except requests.exceptions.RequestException as e:
+            self._log_sync_message(f"HTTP error fetching single batch: {str(e)}", 'error')
+            raise UserError(_('Failed to fetch products from Shopify: %s') % str(e))
+        except Exception as e:
+            self._log_sync_message(f"Unexpected error fetching single batch: {str(e)}", 'error')
+            raise
+
+    def _sync_products_chunked(self, created_this_year=False, updated_at_min=None, max_pages_per_chunk=10):
+        """Sync products in chunks to avoid timeouts"""
+        total_synced = 0
+        config_param = self.env['ir.config_parameter'].sudo()
+
+        try:
+            # Get initial batch of products
+            products = self.fetch_shopify_products_chunk(
+                limit=10,
+                created_this_year=created_this_year,
+                updated_at_min=updated_at_min,
+                max_pages=max_pages_per_chunk
+            )
+
+            if products:
+                # Process this chunk
+                self.save_products_to_odoo(products)
+                total_synced += len(products)
+
+                # Update timestamp to latest product in this chunk
+                latest_updated_at = max(product.get('updated_at', '') for product in products)
+                if latest_updated_at:
+                    config_param.set_param('shopify.last_updated_at', latest_updated_at)
+                    self._log_sync_message(f"Updated last sync timestamp to: {latest_updated_at}")
+
+                # Commit this chunk to database
+                self.env.cr.commit()
+                self._log_sync_message(f"Processed chunk: {len(products)} products (Total so far: {total_synced})")
+
+                # Check if there are more products to sync
+                # For large initial syncs, we'll continue in subsequent cron runs
+                if len(products) >= (max_pages_per_chunk * 250):
+                    self._log_sync_message(f"Large sync detected. Will continue in next cron run. Synced {total_synced} products in this batch.")
+                else:
+                    self._log_sync_message(f"Sync completed. Total products synced: {total_synced}")
             else:
-                self._log_sync_message(f"Page {page_number}: Fetched {len(products)} products from Shopify")
+                self._log_sync_message("No products to sync")
 
-            return products, next_page_token
+        except Exception as e:
+            self._log_sync_message(f"Error in chunked sync: {str(e)}", 'error')
+            raise
+
+        return total_synced
+
+    def fetch_shopify_products_chunk(self, limit=10, created_this_year=False, updated_at_min=None, max_pages=10):
+        """Fetch a limited chunk of products to avoid timeouts"""
+        try:
+            headers = self._get_shopify_headers()
+            params = {
+                'limit': limit,
+                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
+            }
+
+            if updated_at_min:
+                # Incremental sync - get products updated since last sync
+                params['updated_at_min'] = updated_at_min
+                sync_type = "incremental"
+            elif created_this_year:
+                # First sync - get products created this year
+                current_year = fields.Date.today().year
+                params['created_at_min'] = f"{current_year}-01-01T00:00:00Z"
+                sync_type = "initial (this year)"
+            else:
+                sync_type = "full"
+
+            all_products = []
+            page = 1
+
+            while page <= max_pages:
+                url = self._get_shopify_url('products.json')
+                response = requests.get(url, headers=headers, params=params, timeout=30)
+                response.raise_for_status()
+
+                data = response.json()
+                products = data.get('products', [])
+
+                if not products:
+                    break
+
+                all_products.extend(products)
+                self._log_sync_message(f"Page {page}: Fetched {len(products)} products ({sync_type} sync)")
+
+                # Check for next page
+                next_page_token = self.parse_next_page_token(response.headers.get('Link'))
+                if not next_page_token:
+                    break
+
+                # Update params for next page
+                params = {
+                    'limit': limit,
+                    'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                    'page_info': next_page_token
+                }
+                page += 1
+
+            self._log_sync_message(f"Completed {sync_type} chunk: Fetched {len(all_products)} products in {page-1} pages")
+            return all_products
+
+        except requests.exceptions.RequestException as e:
+            self._log_sync_message(f"HTTP error fetching products chunk: {str(e)}", 'error')
+            raise UserError(_('Failed to fetch products from Shopify: %s') % str(e))
+        except Exception as e:
+            self._log_sync_message(f"Unexpected error fetching products chunk: {str(e)}", 'error')
+            raise
+
+    def fetch_shopify_products(self, limit=10, created_this_year=False, updated_at_min=None):
+        """Fetch products from Shopify API using timestamp-based filtering"""
+        try:
+            headers = self._get_shopify_headers()
+            params = {
+                'limit': limit,
+                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
+            }
+
+            if updated_at_min:
+                # Incremental sync - get products updated since last sync
+                params['updated_at_min'] = updated_at_min
+                sync_type = "incremental"
+            elif created_this_year:
+                # First sync - get products created this year
+                current_year = fields.Date.today().year
+                params['created_at_min'] = f"{current_year}-01-01T00:00:00Z"
+                sync_type = "initial (this year)"
+            else:
+                sync_type = "full"
+
+            all_products = []
+            page = 1
+
+            while True:
+                url = self._get_shopify_url('products.json')
+                response = requests.get(url, headers=headers, params=params, timeout=30)
+                response.raise_for_status()
+
+                data = response.json()
+                products = data.get('products', [])
+
+                if not products:
+                    break
+
+                all_products.extend(products)
+                self._log_sync_message(f"Page {page}: Fetched {len(products)} products ({sync_type} sync)")
+
+                # Check for next page
+                next_page_token = self.parse_next_page_token(response.headers.get('Link'))
+                if not next_page_token:
+                    break
+
+                # Update params for next page
+                params = {
+                    'limit': limit,
+                    'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                    'page_info': next_page_token
+                }
+                page += 1
+
+            self._log_sync_message(f"Completed {sync_type} sync: Fetched {len(all_products)} products total")
+            return all_products
 
         except requests.exceptions.RequestException as e:
             self._log_sync_message(f"HTTP error fetching products: {str(e)}", 'error')
@@ -278,6 +460,11 @@ class ShopifySync(models.Model):
                     self._save_single_product(product)
             except Exception as e:
                 self._log_sync_message(f"Error saving product {product.get('title', 'Unknown')}: {str(e)}", 'error')
+                # Rollback any partial transaction to prevent "transaction aborted" errors
+                try:
+                    self.env.cr.rollback()
+                except:
+                    pass
                 continue
 
     def _save_single_product(self, shopify_product):
@@ -581,11 +768,92 @@ class ShopifySync(models.Model):
 
                 if template_attribute_value:
                     attribute_value_ids.append(template_attribute_value.id)
+                else:
+                    # If template attribute value doesn't exist, skip this attribute to avoid constraint violations
+                    self._log_sync_message(f"Template attribute value not found for {attribute_name}={option_value}, skipping to avoid constraint violation", 'warning')
 
         except Exception as e:
             self._log_sync_message(f"Error processing variant attributes: {str(e)}", 'warning')
 
         return attribute_value_ids
+
+    def _process_variant_attributes_safe(self, variant, product_template, shopify_product=None):
+        """Process Shopify variant attributes safely - create attributes but don't assign to variants"""
+        try:
+            # Shopify variants have option1, option2, option3 fields
+            variant_options = []
+            for i in range(1, 4):  # option1, option2, option3
+                option_value = variant.get(f'option{i}')
+                if option_value and option_value.lower() != 'default title':
+                    variant_options.append((i, option_value))
+
+            if not variant_options:
+                # No variant options, this is a simple product
+                return
+
+            # Get attribute names from Shopify product options if available
+            option_names = {}
+            if shopify_product and 'options' in shopify_product:
+                for option in shopify_product['options']:
+                    position = option.get('position', 1)
+                    name = option.get('name', f'Option {position}')
+                    option_names[position] = name
+
+            # Create attributes and values but DON'T link them to variants
+            for option_index, option_value in variant_options:
+                # Use meaningful attribute name from Shopify or fallback
+                attribute_name = option_names.get(option_index, f"Shopify Option {option_index}")
+
+                # Get or create the product attribute
+                product_attribute = self.env['product.attribute'].sudo().search([
+                    ('name', '=', attribute_name)
+                ], limit=1)
+
+                if not product_attribute:
+                    product_attribute = self.env['product.attribute'].sudo().create({
+                        'name': attribute_name,
+                        'display_type': 'radio',
+                        'create_variant': 'no_variant'  # IMPORTANT: Don't create variants automatically
+                    })
+                    self._log_sync_message(f"Created product attribute: {attribute_name} (no variant creation)")
+
+                # Get or create the attribute value
+                attribute_value = self.env['product.attribute.value'].sudo().search([
+                    ('attribute_id', '=', product_attribute.id),
+                    ('name', '=', option_value)
+                ], limit=1)
+
+                if not attribute_value:
+                    attribute_value = self.env['product.attribute.value'].sudo().create({
+                        'attribute_id': product_attribute.id,
+                        'name': option_value
+                    })
+                    self._log_sync_message(f"Created attribute value: {option_value} for {attribute_name}")
+
+                # Check if this attribute is already linked to the product template
+                template_attribute = self.env['product.template.attribute.line'].sudo().search([
+                    ('product_tmpl_id', '=', product_template.id),
+                    ('attribute_id', '=', product_attribute.id)
+                ], limit=1)
+
+                if not template_attribute:
+                    # Link the attribute to the product template (but don't create variants)
+                    template_attribute = self.env['product.template.attribute.line'].sudo().create({
+                        'product_tmpl_id': product_template.id,
+                        'attribute_id': product_attribute.id,
+                        'value_ids': [(6, 0, [attribute_value.id])]
+                    })
+                    self._log_sync_message(f"Linked attribute {attribute_name} to product template (no variant creation)")
+                else:
+                    # Add the value to existing attribute line if not already there
+                    if attribute_value.id not in template_attribute.value_ids.ids:
+                        template_attribute.sudo().write({
+                            'value_ids': [(4, attribute_value.id)]
+                        })
+                        self._log_sync_message(f"Added value {option_value} to existing attribute {attribute_name}")
+
+        except Exception as e:
+            self._log_sync_message(f"Error processing variant attributes safely: {str(e)}", 'warning')
 
     def _save_product_variant(self, product_template, variant, shopify_product=None):
         """Save product variant with proper attributes"""
@@ -596,8 +864,18 @@ class ShopifySync(models.Model):
             ('default_code', '=', f"SHOPIFY_VAR_{shopify_variant_id}")
         ], limit=1)
 
-        # Handle variant attributes from Shopify
-        attribute_value_ids = self._process_variant_attributes(variant, product_template, shopify_product)
+        # ENABLE ATTRIBUTE PROCESSING BUT DISABLE VARIANT COMBINATIONS
+        # Process attributes for template but don't assign to variants to avoid constraint violations
+        attribute_value_ids = []
+        if not existing_variant:
+            # Only process attributes for new variants, and only for template setup
+            try:
+                self._process_variant_attributes_safe(variant, product_template, shopify_product)
+                self._log_sync_message(f"Processed attributes for template (variant combinations disabled) for variant {shopify_variant_id}", 'info')
+            except Exception as e:
+                self._log_sync_message(f"Error processing attributes: {str(e)}", 'warning')
+        else:
+            self._log_sync_message(f"Skipping attribute processing for existing variant {shopify_variant_id}", 'info')
 
         # Handle barcode carefully to avoid duplicates
         shopify_barcode = variant.get('barcode')
@@ -627,9 +905,11 @@ class ShopifySync(models.Model):
         if barcode_to_use:
             variant_vals['barcode'] = barcode_to_use
 
-        # Add attribute values if any were processed
-        if attribute_value_ids:
-            variant_vals['product_template_attribute_value_ids'] = [(6, 0, attribute_value_ids)]
+        # ATTRIBUTE PROCESSING DISABLED - Skip all attribute-related fields to avoid constraint violations
+        # Remove any attribute-related fields that might cause constraint violations
+        variant_vals_safe = {k: v for k, v in variant_vals.items()
+                           if k not in ['product_template_attribute_value_ids', 'combination_indices']}
+        variant_vals = variant_vals_safe
 
         if existing_variant:
             # Check if the existing variant is already linked to the correct template
@@ -841,32 +1121,35 @@ class ShopifySync(models.Model):
             sync_record.sync_status = 'running'
 
             config_param = self.env['ir.config_parameter'].sudo()
-            next_page = config_param.get_param('shopify.orders_next_page')
-            current_page = int(config_param.get_param('shopify.orders_current_page', '0'))
+            last_updated_at = config_param.get_param('shopify.orders_last_updated_at')
 
-            if not next_page:
-                # First sync - fetch recent orders
-                current_page = 1
-                config_param.set_param('shopify.orders_current_page', str(current_page))
-                orders, next_page_token = sync_record.fetch_shopify_orders(limit=50, page_number=current_page)
-                config_param.set_param('shopify.orders_next_page', next_page_token or '')
-                sync_record.save_orders_to_odoo(orders)
+            # Fetch only ONE batch per cron run to avoid timeouts
+            if not last_updated_at:
+                # First sync - fetch orders from last 30 days (single batch)
+                sync_record._log_sync_message("First sync: fetching single batch of orders from last 30 days")
+                orders = sync_record.fetch_single_batch_orders(limit=10, last_30_days=True)
             else:
-                # Continue pagination
-                current_page += 1
-                config_param.set_param('shopify.orders_current_page', str(current_page))
-                orders, next_page_token = sync_record.fetch_shopify_orders(limit=50, page_info=next_page, page_number=current_page)
-                config_param.set_param('shopify.orders_next_page', next_page_token or '')
+                # Incremental sync - fetch orders updated since last sync (single batch)
+                sync_record._log_sync_message(f"Incremental sync: fetching single batch updated since {last_updated_at}")
+                orders = sync_record.fetch_single_batch_orders(limit=10, updated_at_min=last_updated_at)
+
+            if orders:
+                # Process this single batch
                 sync_record.save_orders_to_odoo(orders)
+
+                # Update timestamp to latest order in this batch
+                latest_updated_at = max(order.get('updated_at', '') for order in orders)
+                if latest_updated_at:
+                    config_param.set_param('shopify.orders_last_updated_at', latest_updated_at)
+                    sync_record._log_sync_message(f"Updated last orders sync timestamp to: {latest_updated_at}")
+
+                sync_record._log_sync_message(f"Processed batch: {len(orders)} orders. Next cron run will continue from {latest_updated_at}")
+            else:
+                sync_record._log_sync_message("No orders to sync in this batch")
 
             sync_record.sync_status = 'completed'
             sync_record.last_sync_date = fields.Datetime.now()
-            sync_record._log_sync_message(f"Successfully synced {len(orders)} orders")
-
-            # If no more pages, reset pagination for next sync cycle
-            if not next_page_token:
-                config_param.set_param('shopify.orders_current_page', '0')
-                sync_record._log_sync_message("Completed all order pages, pagination reset for next sync cycle")
+            sync_record._log_sync_message(f"Successfully synced {len(orders) if orders else 0} orders in this batch")
 
         except Exception as e:
             if sync_record:
@@ -877,37 +1160,106 @@ class ShopifySync(models.Model):
             # Don't re-raise to prevent cron job from failing completely
             return False
 
-    def fetch_shopify_orders(self, limit=50, page_info=None, page_number=1):
-        """Fetch orders from Shopify API"""
+    def fetch_single_batch_orders(self, limit=10, last_30_days=False, updated_at_min=None):
+        """Fetch a SINGLE batch of orders (one API call) to avoid timeouts"""
         try:
             headers = self._get_shopify_headers()
             params = {
                 'limit': limit,
                 'status': 'any',
-                'fields': 'id,name,email,created_at,updated_at,total_price,currency,customer,line_items,shipping_address,billing_address,financial_status,fulfillment_status'
+                'fields': 'id,name,email,created_at,updated_at,total_price,currency,customer,line_items,shipping_address,billing_address,financial_status,fulfillment_status',
+                'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
             }
 
-            if page_info:
-                params['page_info'] = page_info
+            if updated_at_min:
+                # Incremental sync - get orders updated since last sync
+                params['updated_at_min'] = updated_at_min
+                sync_type = "incremental"
+            elif last_30_days:
+                # First sync - get orders from last 30 days
+                from datetime import datetime, timedelta
+                thirty_days_ago = datetime.now() - timedelta(days=30)
+                params['created_at_min'] = thirty_days_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
+                sync_type = "initial (last 30 days)"
+            else:
+                sync_type = "full"
 
+            # Make ONLY ONE API call
             url = self._get_shopify_url('orders.json')
+            self._log_sync_message(f"Making single API call for {sync_type} orders sync...")
             response = requests.get(url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
 
             data = response.json()
             orders = data.get('orders', [])
-            next_page_token = self.parse_next_page_token(response.headers.get('Link'))
 
-            # Get total count and current progress for orders
-            total_count = self._get_total_orders_count()
-            current_count = self._get_current_synced_orders_count()
+            self._log_sync_message(f"Fetched {len(orders)} orders in single batch ({sync_type} sync)")
+            return orders
 
-            if total_count:
-                self._log_sync_message(f"Page {page_number}: Fetched {len(orders)} of {total_count} orders from Shopify (Progress: {current_count + len(orders)}/{total_count})")
+        except requests.exceptions.RequestException as e:
+            self._log_sync_message(f"HTTP error fetching single batch of orders: {str(e)}", 'error')
+            raise UserError(_('Failed to fetch orders from Shopify: %s') % str(e))
+        except Exception as e:
+            self._log_sync_message(f"Unexpected error fetching single batch of orders: {str(e)}", 'error')
+            raise
+
+    def fetch_shopify_orders(self, limit=10, last_30_days=False, updated_at_min=None):
+        """Fetch orders from Shopify API using timestamp-based filtering"""
+        try:
+            headers = self._get_shopify_headers()
+            params = {
+                'limit': limit,
+                'status': 'any',
+                'fields': 'id,name,email,created_at,updated_at,total_price,currency,customer,line_items,shipping_address,billing_address,financial_status,fulfillment_status',
+                'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
+            }
+
+            if updated_at_min:
+                # Incremental sync - get orders updated since last sync
+                params['updated_at_min'] = updated_at_min
+                sync_type = "incremental"
+            elif last_30_days:
+                # First sync - get orders from last 30 days
+                from datetime import datetime, timedelta
+                thirty_days_ago = datetime.now() - timedelta(days=30)
+                params['created_at_min'] = thirty_days_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
+                sync_type = "initial (last 30 days)"
             else:
-                self._log_sync_message(f"Page {page_number}: Fetched {len(orders)} orders from Shopify")
+                sync_type = "full"
 
-            return orders, next_page_token
+            all_orders = []
+            page = 1
+
+            while True:
+                url = self._get_shopify_url('orders.json')
+                response = requests.get(url, headers=headers, params=params, timeout=30)
+                response.raise_for_status()
+
+                data = response.json()
+                orders = data.get('orders', [])
+
+                if not orders:
+                    break
+
+                all_orders.extend(orders)
+                self._log_sync_message(f"Page {page}: Fetched {len(orders)} orders ({sync_type} sync)")
+
+                # Check for next page
+                next_page_token = self.parse_next_page_token(response.headers.get('Link'))
+                if not next_page_token:
+                    break
+
+                # Update params for next page
+                params = {
+                    'limit': limit,
+                    'status': 'any',
+                    'fields': 'id,name,email,created_at,updated_at,total_price,currency,customer,line_items,shipping_address,billing_address,financial_status,fulfillment_status',
+                    'page_info': next_page_token
+                }
+                page += 1
+
+            self._log_sync_message(f"Completed {sync_type} sync: Fetched {len(all_orders)} orders total")
+            return all_orders
 
         except requests.exceptions.RequestException as e:
             self._log_sync_message(f"HTTP error fetching orders: {str(e)}", 'error')
@@ -1179,7 +1531,7 @@ class ShopifySync(models.Model):
             shopify_products = self.env['product.template'].sudo().search([
                 ('default_code', 'like', 'SHOPIFY_%'),
                 ('sale_ok', '=', True)
-            ], limit=50)
+            ], limit=10)
 
             updated_count = 0
             for product in shopify_products:
