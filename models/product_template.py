@@ -15,6 +15,10 @@ class ProductTemplate(models.Model):
         string='Last Synced to Shopify',
         help='Timestamp when this product was last synced to Shopify from Odoo'
     )
+    description_html = fields.Html(
+        string='Product Description (HTML)',
+        help='The HTML description of the product from Shopify'
+    )
 
 
 class ProductProduct(models.Model):

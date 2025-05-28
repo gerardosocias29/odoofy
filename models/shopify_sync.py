@@ -153,7 +153,7 @@ class ShopifySync(models.Model):
             headers = self._get_shopify_headers()
             params = {
                 'limit': limit,
-                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options,body_html',
                 'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
             }
 
@@ -238,7 +238,7 @@ class ShopifySync(models.Model):
             headers = self._get_shopify_headers()
             params = {
                 'limit': limit,
-                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options,body_html',
                 'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
             }
 
@@ -300,7 +300,7 @@ class ShopifySync(models.Model):
             headers = self._get_shopify_headers()
             params = {
                 'limit': limit,
-                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options',
+                'fields': 'id,title,variants,images,product_type,created_at,updated_at,vendor,handle,status,options,body_html',
                 'order': 'updated_at asc'  # Ensure consistent ordering for timestamp-based sync
             }
 
@@ -538,6 +538,7 @@ class ShopifySync(models.Model):
             'purchase_ok': bool(vendor),
             'detailed_type': 'product',
         }
+        template_vals['description_html'] = shopify_product.get('body_html')
 
         # Check if auto-publish on website is enabled
         config_param = self.env['ir.config_parameter'].sudo()
