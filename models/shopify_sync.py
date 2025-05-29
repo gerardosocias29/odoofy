@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import re
 import logging
 from odoo import models, fields, api, _
@@ -169,10 +171,22 @@ class ShopifySync(models.Model):
             else:
                 sync_type = "full"
 
+            # Configure retry mechanism
+            retry_strategy = Retry(
+                total=3,  # Maximum number of retries
+                backoff_factor=1,  # Exponential backoff factor (1 means 1s, 2s, 4s...)
+                status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry on
+                allowed_methods=["GET"]  # Only retry GET requests
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            http = requests.Session()
+            http.mount("https://", adapter)
+            http.mount("http://", adapter)
+
             # Make ONLY ONE API call
             url = self._get_shopify_url('products.json')
             self._log_sync_message(f"Making single API call for {sync_type} sync...")
-            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response = http.get(url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
 
             data = response.json()
@@ -1136,15 +1150,25 @@ class ShopifySync(models.Model):
 
             if orders:
                 # Process this single batch
-                sync_record.save_orders_to_odoo(orders)
-
                 # Update timestamp to latest order in this batch
                 latest_updated_at = max(order.get('updated_at', '') for order in orders)
                 if latest_updated_at:
-                    config_param.set_param('shopify.orders_last_updated_at', latest_updated_at)
-                    sync_record._log_sync_message(f"Updated last orders sync timestamp to: {latest_updated_at}")
+                    sync_record._log_sync_message(f"latest_updated_at raw: {latest_updated_at}")
+                    try:
+                        # Convert to UTC
+                        from datetime import datetime
+                        utc_dt = datetime.fromisoformat(latest_updated_at)
+                        formatted_updated_at = fields.Datetime.to_string(utc_dt)
+                        sync_record._log_sync_message(f"latest_updated_at before: {latest_updated_at}")
+                        sync_record._log_sync_message(f"latest_updated_at after: {formatted_updated_at}")
+                        config_param.set_param('shopify.orders_last_updated_at', formatted_updated_at)
+                        sync_record._log_sync_message(f"Updated last orders sync timestamp to: {formatted_updated_at}")
+                    except Exception as e:
+                        sync_record._log_sync_message(f"Error converting timestamp: {str(e)}", 'error')
+                    else:
+                        sync_record._log_sync_message(f"Processed batch: {len(orders)} orders. Next cron run will continue from {formatted_updated_at}")
 
-                sync_record._log_sync_message(f"Processed batch: {len(orders)} orders. Next cron run will continue from {latest_updated_at}")
+                sync_record.save_orders_to_odoo(orders)
             else:
                 sync_record._log_sync_message("No orders to sync in this batch")
 
@@ -1163,6 +1187,17 @@ class ShopifySync(models.Model):
 
     def fetch_single_batch_orders(self, limit=10, last_30_days=False, updated_at_min=None):
         """Fetch a SINGLE batch of orders (one API call) to avoid timeouts"""
+        # Configure retry mechanism
+        retry_strategy = Retry(
+            total=3,  # Maximum number of retries
+            backoff_factor=1,  # Exponential backoff factor (1 means 1s, 2s, 4s...)
+            status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry on
+            allowed_methods=["GET"]  # Only retry GET requests
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("https://", adapter)
+        http.mount("http://", adapter)
         try:
             headers = self._get_shopify_headers()
             params = {
@@ -1188,7 +1223,7 @@ class ShopifySync(models.Model):
             # Make ONLY ONE API call
             url = self._get_shopify_url('orders.json')
             self._log_sync_message(f"Making single API call for {sync_type} orders sync...")
-            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response = http.get(url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
 
             data = response.json()
@@ -1271,14 +1306,21 @@ class ShopifySync(models.Model):
 
     def save_orders_to_odoo(self, orders):
         """Save Shopify orders to Odoo"""
+        success_count = 0
         for order in orders:
             # Use a savepoint for each order to isolate transaction errors
             try:
                 with self.env.cr.savepoint():
                     self._save_single_order(order)
+                    success_count += 1
             except Exception as e:
                 self._log_sync_message(f"Error saving order {order.get('name', 'Unknown')}: {str(e)}", 'error')
                 continue
+
+        if success_count == len(orders):
+            self._log_sync_message(f"Successfully synced {len(orders)} orders in this batch")
+        else:
+            self._log_sync_message(f"Successfully synced {success_count} orders out of {len(orders)} in this batch", 'warning')
 
     def _save_single_order(self, shopify_order):
         """Save a single Shopify order to Odoo"""
@@ -1296,11 +1338,21 @@ class ShopifySync(models.Model):
         customer = self._get_or_create_customer(shopify_order)
 
         # Create sale order
+        created_at = shopify_order.get('created_at')
+        if created_at:
+            from datetime import datetime, timezone
+            created_at = created_at.replace('+08:00', '+0800')
+            dt = datetime.fromisoformat(created_at)
+            utc_dt = dt.astimezone(timezone.utc)
+            date_order = fields.Datetime.to_string(utc_dt)
+        else:
+            date_order = None
+
         order_vals = {
             'partner_id': customer.id,
             'client_order_ref': f"SHOPIFY_{shopify_order_id}",
             'origin': shopify_order.get('name'),
-            'date_order': shopify_order.get('created_at'),
+            'date_order': date_order,
             'state': 'draft',
             'currency_id': self._get_currency_id(shopify_order.get('currency', 'USD')),
         }
@@ -1392,8 +1444,8 @@ class ShopifySync(models.Model):
         # Create order line
         line_vals = {
             'order_id': sale_order.id,
-            'product_id': product.id,
-            'name': line_item.get('title', product.name),
+            'product_id': product.id if product else False,
+            'name': line_item.get('title', product.name if product else 'Shopify Product'),
             'product_uom_qty': float(line_item.get('quantity', 1)),
             'price_unit': float(line_item.get('price', 0)),
         }
@@ -1420,6 +1472,8 @@ class ShopifySync(models.Model):
     def _get_state_id(self, state_code, country_code):
         """Get state ID by code and country"""
         if not state_code or not country_code:
+            return False
+        if state_code is None or country_code is None:
             return False
 
         country = self.env['res.country'].sudo().search([('code', '=', country_code.upper())], limit=1)
