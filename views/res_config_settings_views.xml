@@ -111,6 +111,21 @@
                                     </div>
                                 </div>
                             </div>
+
+                            <h3>Invoice Settings</h3>
+                            <div class="row mt16 o_settings_container">
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="send_invoice_on_payment"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="send_invoice_on_payment"/>
+                                        <div class="text-muted">
+                                            Automatically send invoice to customer when order is paid
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </sheet>
                 </form>

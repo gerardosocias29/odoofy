@@ -1364,11 +1364,44 @@ class ShopifySync(models.Model):
         for line_item in line_items:
             self._create_order_line(sale_order, line_item)
 
-        # Confirm order if paid
+        # Confirm order if paid and create invoice
         if shopify_order.get('financial_status') == 'paid':
             sale_order.sudo().action_confirm()
 
-        self._log_sync_message(f"Created order: {shopify_order.get('name')}")
+            # Create invoice
+            invoice = self.env['account.move'].sudo().create({
+                'move_type': 'out_invoice',
+                'invoice_date': fields.Date.today(),
+                'partner_id': sale_order.partner_id.id,
+                'sale_id': sale_order.id,
+                'currency_id': sale_order.currency_id.id,
+                'invoice_line_ids': [(0, 0, {
+                    'name': line.name,
+                    'quantity': line.product_uom_qty,
+                    'price_unit': line.price_unit,
+                    'product_id': line.product_id.id,
+                    'tax_ids': [(6, 0, line.tax_id.ids)],
+                    'sale_line_ids': [(6, 0, [line.id])],
+                }) for line in sale_order.order_line],
+            })
+            invoice.action_post()
+
+            # Check ir.config_parameter before sending invoice
+            send_invoice = self.env['ir.config_parameter'].sudo().get_param('odoofy.send_invoice_on_payment')
+            if send_invoice == 'True':
+                try:
+                    invoice.action_invoice_sent()
+                    self._log_sync_message(f"Invoice sent for order: {shopify_order.get('name')}")
+                except Exception as e:
+                    self._log_sync_message(f"Error sending invoice for order {shopify_order.get('name')}: {str(e)}", 'error')
+            else:
+                self._log_sync_message(f"Invoice not sent for order: {shopify_order.get('name')} due to configuration")
+
+        elif shopify_order.get('financial_status') == 'partially_paid':
+            self._log_sync_message(f"Order {shopify_order.get('name')} is partially paid, invoice will not be created.")
+        else:
+            self._log_sync_message(f"Order {shopify_order.get('name')} is not paid, invoice will not be created.")
+
         return sale_order
 
     def _get_or_create_customer(self, shopify_order):

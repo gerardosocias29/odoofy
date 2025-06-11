@@ -84,5 +84,11 @@
             <field name="value"></field>
         </record>
 
+        <!-- Send Invoice on Payment -->
+        <record id="send_invoice_on_payment_param" model="ir.config_parameter">
+            <field name="key">odoofy.send_invoice_on_payment</field>
+            <field name="value">False</field>
+        </record>
+
     </data>
 </odoo>
