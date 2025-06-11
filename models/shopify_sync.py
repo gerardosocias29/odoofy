@@ -1373,7 +1373,7 @@ class ShopifySync(models.Model):
                 'move_type': 'out_invoice',
                 'invoice_date': fields.Date.today(),
                 'partner_id': sale_order.partner_id.id,
-                'sale_id': sale_order.id,
+                'invoice_origin': sale_order.name,
                 'currency_id': sale_order.currency_id.id,
                 'invoice_line_ids': [(0, 0, {
                     'name': line.name,
