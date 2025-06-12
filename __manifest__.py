@@ -35,7 +35,7 @@ Each task is implemented as a one-time callable method to support CRON automatio
         'purchase',
         'contacts',
         'stock_dropshipping',
-        'website_sale',
+        # 'website_sale',
     ],
     'data': [
         'security/shopify_sync_security.xml',
