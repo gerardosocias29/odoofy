@@ -1327,7 +1327,7 @@ class ShopifySync(models.Model):
         # Check if order already exists
         shopify_order_id = str(shopify_order['id'])
         existing_order = self.env['sale.order'].sudo().search([
-            ('client_order_ref', '=', f"SHOPIFY_{shopify_order_id}")
+            ('client_order_ref', '=', f"SHOPIFY_{shopify_order_id}"),
             ('state', '!=', 'cancel')
         ], limit=1)
 
@@ -1420,6 +1420,7 @@ class ShopifySync(models.Model):
             # Create anonymous customer
             return self.env['res.partner'].sudo().create({
                 'name': shopify_order.get('name'),
+                'name': f"{shopify_order.get('name')}",
                 'is_company': False,
                 'customer_rank': 1,
             })
