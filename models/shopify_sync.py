@@ -1156,11 +1156,14 @@ class ShopifySync(models.Model):
                     sync_record._log_sync_message(f"latest_updated_at raw: {latest_updated_at}")
                     try:
                         # Convert to UTC
-                        from datetime import datetime
-                        utc_dt = datetime.fromisoformat(latest_updated_at)
-                        formatted_updated_at = fields.Datetime.to_string(utc_dt)
+                        from datetime import datetime, timezone
+                        
+                        dt = datetime.fromisoformat(latest_updated_at)
+                        dt_utc = dt.astimezone(timezone.utc)
+                        formatted_updated_at = fields.Datetime.to_string(dt_utc)
                         sync_record._log_sync_message(f"latest_updated_at before: {latest_updated_at}")
-                        sync_record._log_sync_message(f"latest_updated_at after: {formatted_updated_at}")
+                        sync_record._log_sync_message(f"latest_updated_at after (UTC): {formatted_updated_at}")
+
                         config_param.set_param('shopify.orders_last_updated_at', formatted_updated_at)
                         sync_record._log_sync_message(f"Updated last orders sync timestamp to: {formatted_updated_at}")
                     except Exception as e:
