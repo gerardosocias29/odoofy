@@ -1340,14 +1340,26 @@ class ShopifySync(models.Model):
 
         # Create sale order
         created_at = shopify_order.get('created_at')
+        date_order = None
         if created_at:
-            from datetime import datetime, timezone
-            created_at = created_at.replace('+08:00', '+0800')
-            dt = datetime.fromisoformat(created_at)
-            utc_dt = dt.astimezone(timezone.utc)
-            date_order = fields.Datetime.to_string(utc_dt)
-        else:
-            date_order = None
+            try:
+                from datetime import datetime, timezone
+                import pytz
+                dt = datetime.fromisoformat(created_at)
+                self._log_sync_message(
+                    f"Shopify Order {shopify_order.get('name')} original created_at (local): {dt.isoformat()}"
+                )
+                dt_utc = dt.astimezone(pytz.utc)
+                date_order = fields.Datetime.to_string(dt_utc)
+
+                # Log converted UTC datetime
+                self._log_sync_message(
+                    f"Shopify Order {shopify_order.get('name')} converted date_order (UTC for Odoo): {date_order}"
+                )
+            except Exception as e:
+                self._log_sync_message(
+                    f"Error parsing created_at for order {shopify_order.get('name')}: {str(e)}", 'warning'
+                )
 
         order_vals = {
             'partner_id': customer.id,
