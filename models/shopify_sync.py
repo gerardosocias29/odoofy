@@ -1328,10 +1328,11 @@ class ShopifySync(models.Model):
         shopify_order_id = str(shopify_order['id'])
         existing_order = self.env['sale.order'].sudo().search([
             ('client_order_ref', '=', f"SHOPIFY_{shopify_order_id}")
+            ('state', '!=', 'cancel')
         ], limit=1)
 
         if existing_order:
-            self._log_sync_message(f"Order {shopify_order.get('name')} already exists, skipping")
+            self._log_sync_message(f"Order {shopify_order.get('name')} already exists with ID: {existing_order.id}, skipping")
             return existing_order
 
         # Get or create customer
@@ -1364,8 +1365,12 @@ class ShopifySync(models.Model):
         for line_item in line_items:
             self._create_order_line(sale_order, line_item)
 
+        if shopify_order.get('financial_status') == 'cancelled':
+            sale_order.sudo().action_cancel()
+            self._log_sync_message(f"Order {shopify_order.get('name')} is cancelled, setting to cancel state.")
+
         # Confirm order if paid and create invoice
-        if shopify_order.get('financial_status') == 'paid':
+        elif shopify_order.get('financial_status') == 'paid':
             sale_order.sudo().action_confirm()
 
             # Create invoice
@@ -1402,6 +1407,8 @@ class ShopifySync(models.Model):
         else:
             self._log_sync_message(f"Order {shopify_order.get('name')} is not paid, invoice will not be created.")
 
+        
+
         return sale_order
 
     def _get_or_create_customer(self, shopify_order):
@@ -1412,7 +1419,7 @@ class ShopifySync(models.Model):
         if not email:
             # Create anonymous customer
             return self.env['res.partner'].sudo().create({
-                'name': 'Anonymous Customer',
+                'name': shopify_order.get('name'),
                 'is_company': False,
                 'customer_rank': 1,
             })
