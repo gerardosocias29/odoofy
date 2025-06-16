@@ -126,6 +126,22 @@
                                     </div>
                                 </div>
                             </div>
+
+                            <h3>Customer Settings</h3>
+                            <div class="row mt16 o_settings_container">
+                                <div class="col-12 col-lg-6 o_setting_box">
+                                    <div class="o_setting_left_pane">
+                                        <field name="create_user_portal"/>
+                                    </div>
+                                    <div class="o_setting_right_pane">
+                                        <label for="create_user_portal"/>
+                                        <div class="text-muted">
+                                            Automatically create a user portal for customers when order is paid
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                         </div>
                     </sheet>
                 </form>

@@ -90,5 +90,11 @@
             <field name="value">False</field>
         </record>
 
+        <!-- Create User Portal -->
+        <record id="create_user_portal_param" model="ir.config_parameter">
+            <field name="key">odoofy.create_user_portal</field>
+            <field name="value">False</field>
+        </record>
+
     </data>
 </odoo>
