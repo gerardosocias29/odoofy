@@ -1534,7 +1534,7 @@ class ShopifySync(models.Model):
     def _create_order_line(self, sale_order, line_item):
         """Create sale order line from Shopify line item"""
         # Find product by variant ID or SKU
-        variant_id = line_item.get('variant_id')
+        variant_id = line_item.get('id')
         sku = line_item.get('sku')
 
         product = None
@@ -1543,19 +1543,16 @@ class ShopifySync(models.Model):
                 ('default_code', '=', f"SHOPIFY_VAR_{variant_id}")
             ], limit=1)
 
-        if not product and sku:
+        if not product and variant_id:
             product = self.env['product.product'].sudo().search([
-                ('default_code', '=', sku)
+                ('default_code', '=', f"SHOPIFY_VAR_{variant_id}")
             ], limit=1)
 
-        if not product:
-            # Create a generic product
-            product = self.env['product.product'].sudo().create({
-                'name': line_item.get('title', 'Shopify Product'),
-                'default_code': f"SHOPIFY_UNKNOWN_{line_item.get('id')}",
-                'type': 'product',
-                'list_price': float(line_item.get('price', 0)),
-            })
+        # log product
+        if product:
+            self._log_sync_message(f"Found product {product.name} for line item {line_item.get('title')}")
+        else:
+            self._log_sync_message(f"Product not found for line item {line_item.get('title')}, creating new product", 'warning')
 
         # Create order line
         line_vals = {
@@ -1564,6 +1561,7 @@ class ShopifySync(models.Model):
             'name': line_item.get('title', product.name if product else 'Shopify Product'),
             'product_uom_qty': float(line_item.get('quantity', 1)),
             'price_unit': float(line_item.get('price', 0)),
+            'product_uom': product.uom_id.id if product else self.env.ref('uom.product_uom_unit').id
         }
 
         return self.env['sale.order.line'].sudo().create(line_vals)
