@@ -1410,33 +1410,33 @@ class ShopifySync(models.Model):
             invoice.action_post()
 
             # Register payment
-            payment_amount = shopify_order.get('total_price')
-            if payment_amount:
-                payment_method_id = self.env['account.journal'].search([('type', '=', 'bank')], limit=1).id  # Assuming bank journal for Shopify payments
-                payment = self.env['account.payment'].sudo().create({
-                    'amount': float(payment_amount),
-                    'payment_type': 'inbound',
-                    'partner_type': 'customer',
-                    'partner_id': sale_order.partner_id.id,
-                    'journal_id': payment_method_id,
-                    'payment_method_id': self.env.ref('account.account_payment_method_manual_in').id,  # Manual payment method
-                    'communication': sale_order.name,
-                    'currency_id': sale_order.currency_id.id,
-                })
-                payment.action_post()
+            # payment_amount = shopify_order.get('total_price')
+            # if payment_amount:
+            #     payment_method_id = self.env['account.journal'].search([('type', '=', 'bank')], limit=1).id  # Assuming bank journal for Shopify payments
+            #     payment = self.env['account.payment'].sudo().create({
+            #         'amount': float(payment_amount),
+            #         'payment_type': 'inbound',
+            #         'partner_type': 'customer',
+            #         'partner_id': sale_order.partner_id.id,
+            #         'journal_id': payment_method_id,
+            #         'payment_method_id': self.env.ref('account.account_payment_method_manual_in').id,  # Manual payment method
+            #         'communication': sale_order.name,
+            #         'currency_id': sale_order.currency_id.id,
+            #     })
+            #     payment.action_post()
 
-                # Reconcile payment with invoice
-                for move_line in invoice.line_ids.filtered(lambda l: l.account_id == invoice.account_id):
-                    payment_line = payment.line_ids.filtered(lambda l: l.account_id == invoice.account_id)
-                    (payment_line + move_line).reconcile()
+            #     # Reconcile payment with invoice
+            #     for move_line in invoice.line_ids.filtered(lambda l: l.account_id == invoice.account_id):
+            #         payment_line = payment.line_ids.filtered(lambda l: l.account_id == invoice.account_id)
+            #         (payment_line + move_line).reconcile()
 
-                self._log_sync_message(f"Registered payment for invoice: {invoice.name}")
-            else:
-                self._log_sync_message(f"No payment amount found for order {shopify_order.get('name')}, skipping payment registration.")
+            #     self._log_sync_message(f"Registered payment for invoice: {invoice.name}")
+            # else:
+            #     self._log_sync_message(f"No payment amount found for order {shopify_order.get('name')}, skipping payment registration.")
 
             # Check ir.config_parameter before sending invoice
             send_invoice = self.env['ir.config_parameter'].sudo().get_param('odoofy.send_invoice_on_payment')
-            if send_invoice == 'True':
+            if send_invoice == 'True' or send_invoice == True:
                 try:
                     invoice.action_invoice_sent()
                     self._log_sync_message(f"Invoice sent for order: {shopify_order.get('name')}")
@@ -1446,34 +1446,36 @@ class ShopifySync(models.Model):
                 self._log_sync_message(f"Invoice not sent for order: {shopify_order.get('name')} due to configuration")
 
             # Activate customer portal and notify customer
-            try:
-                user = self.env['res.users'].sudo().search([('partner_id', '=', sale_order.partner_id.id)], limit=1)
-                if not user:
-                    # Create a new user for the customer
-                    user = self.env['res.users'].sudo().create({
-                        'login': sale_order.partner_id.email,
-                        'partner_id': sale_order.partner_id.id,
-                        'name': sale_order.partner_id.name,
-                        'email': sale_order.partner_id.email,
-                        'groups_id': [(6, 0, [self.env.ref('base.group_portal').id])],  # Assign portal group
-                        'active': True,
-                        'password': sale_order.partner_id.email,  # Set default password to email
-                    })
-                    self._log_sync_message(f"Created new portal user for customer: {sale_order.partner_id.name}")
-                elif not user.active:
-                    user.sudo().write({'active': True})
-                    self._log_sync_message(f"Activated portal user for customer: {sale_order.partner_id.name}")
-
-                # Send welcome email
+            create_user_portal = self.env['ir.config_parameter'].sudo().get_param('odoofy.create_user_portal')
+            if create_user_portal == 'True' or create_user_portal == True:
                 try:
-                    template_id = self.env.ref('portal.mail_template_data_portal_welcome').id
-                    self.env['mail.template'].sudo().browse(template_id).send_mail(user.id, force_send=True)
-                    self._log_sync_message(f"Sent portal welcome email to customer: {sale_order.partner_id.name}")
-                except Exception as e:
-                    self._log_sync_message(f"Error sending portal welcome email to customer {sale_order.partner_id.name}: {str(e)}", 'error')
+                    user = self.env['res.users'].sudo().search([('partner_id', '=', sale_order.partner_id.id)], limit=1)
+                    if not user:
+                        # Create a new user for the customer
+                        user = self.env['res.users'].sudo().create({
+                            'login': sale_order.partner_id.email,
+                            'partner_id': sale_order.partner_id.id,
+                            'name': sale_order.partner_id.name,
+                            'email': sale_order.partner_id.email,
+                            'groups_id': [(6, 0, [self.env.ref('base.group_portal').id])],  # Assign portal group
+                            'active': True,
+                            'password': sale_order.partner_id.email,  # Set default password to email
+                        })
+                        self._log_sync_message(f"Created new portal user for customer: {sale_order.partner_id.name}")
+                    elif not user.active:
+                        user.sudo().write({'active': True})
+                        self._log_sync_message(f"Activated portal user for customer: {sale_order.partner_id.name}")
 
-            except Exception as e:
-                self._log_sync_message(f"Error activating customer portal for order {shopify_order.get('name')}: {str(e)}", 'error')
+                    # Send welcome email
+                    try:
+                        template_id = self.env.ref('portal.mail_template_data_portal_welcome').id
+                        self.env['mail.template'].sudo().browse(template_id).send_mail(user.id, force_send=True)
+                        self._log_sync_message(f"Sent portal welcome email to customer: {sale_order.partner_id.name}")
+                    except Exception as e:
+                        self._log_sync_message(f"Error sending portal welcome email to customer {sale_order.partner_id.name}: {str(e)}", 'error')
+
+                except Exception as e:
+                    self._log_sync_message(f"Error activating customer portal for order {shopify_order.get('name')}: {str(e)}", 'error')
 
         elif shopify_order.get('financial_status') == 'partially_paid':
             self._log_sync_message(f"Order {shopify_order.get('name')} is partially paid, invoice will not be created.")
