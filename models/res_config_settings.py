@@ -44,6 +44,11 @@ class ResConfigSettings(models.TransientModel):
         help='Automatically send invoice to customer when order is paid'
     )
 
+    create_user_portal = fields.Boolean(
+        string='Create User Portal',
+        help='Automatically create a user portal for customers when enabled'
+    )
+
     @api.model
     def get_values(self):
         res = super(ResConfigSettings, self).get_values()
@@ -58,6 +63,7 @@ class ResConfigSettings(models.TransientModel):
             shopify_auto_export_products=config_param.get_param('shopify.auto_export_products', False),
             shopify_auto_publish_website=config_param.get_param('shopify.auto_publish_website', False),
             send_invoice_on_payment=config_param.get_param('odoofy.send_invoice_on_payment', False),
+            create_user_portal=config_param.get_param('odoofy.create_user_portal', False),
         )
         return res
 
@@ -73,6 +79,7 @@ class ResConfigSettings(models.TransientModel):
         config_param.set_param('shopify.auto_export_products', self.shopify_auto_export_products)
         config_param.set_param('shopify.auto_publish_website', self.shopify_auto_publish_website)
         config_param.set_param('odoofy.send_invoice_on_payment', self.send_invoice_on_payment)
+        config_param.set_param('odoofy.create_user_portal', self.create_user_portal)
 
     def test_shopify_connection(self):
         """Test Shopify API connection"""
