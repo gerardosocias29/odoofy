@@ -25,7 +25,18 @@ print(f"   ✅ Deleted {variant_count} product variants")
 print("Deleting Shopify orders...")
 shopify_orders = env['sale.order'].search([('client_order_ref', 'like', 'SHOPIFY_%')])
 order_count = len(shopify_orders)
-shopify_orders.unlink()
+
+# Cancel orders that are not in 'draft' or 'cancel'
+for order in shopify_orders:
+    if order.state not in ('draft', 'cancel'):
+        order.sudo().action_cancel()
+
+# Re-search for orders now in 'draft' or 'cancel' state
+orders_to_delete = env['sale.order'].search([
+    ('client_order_ref', 'like', 'SHOPIFY_%'),
+    ('state', 'in', ['draft', 'cancel'])
+])
+orders_to_delete.sudo().unlink()
 print(f"   ✅ Deleted {order_count} orders")
 
 # 4. Delete sync records
