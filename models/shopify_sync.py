@@ -557,20 +557,17 @@ class ShopifySync(models.Model):
 
         # Check if auto-publish on website is enabled
         config_param = self.env['ir.config_parameter'].sudo()
-        auto_publish = config_param.get_param('shopify.auto_publish_website', False)
+        # auto_publish = config_param.get_param('shopify.auto_publish_website', False)
 
-        if auto_publish:
+        # if auto_publish:
             # Only publish if product status is 'active' in Shopify
-            shopify_status = shopify_product.get('status', 'draft')
-            if shopify_status == 'active':
-                template_vals['is_published'] = True
-                self._log_sync_message(f"Auto-publishing product on website: {shopify_product['title']}")
-            else:
-                template_vals['is_published'] = False
-                self._log_sync_message(f"Product not published (Shopify status: {shopify_status}): {shopify_product['title']}")
-        else:
-            # Default to not published if auto-publish is disabled
-            template_vals['is_published'] = False
+            # shopify_status = shopify_product.get('status', 'draft')
+            # if shopify_status == 'active':
+            #     # template_vals['is_published'] = True
+            #     self._log_sync_message(f"Auto-publishing product on website: {shopify_product['title']}")
+            # else:
+            #     # template_vals['is_published'] = False
+            #     self._log_sync_message(f"Product not published (Shopify status: {shopify_status}): {shopify_product['title']}")
 
         # Store Shopify timestamps for sync tracking
         shopify_updated_at = shopify_product.get('updated_at')
@@ -662,11 +659,12 @@ class ShopifySync(models.Model):
                         self._log_sync_message(f"Error adding vendor to existing product: {str(e)}", 'warning')
 
                 # Log publication status change for existing products
-                if auto_publish and 'is_published' in template_vals:
-                    if template_vals['is_published']:
-                        self._log_sync_message(f"Updated existing product publication status to published: {shopify_product['title']}")
-                    else:
-                        self._log_sync_message(f"Updated existing product publication status to unpublished: {shopify_product['title']}")
+                # if auto_publish:
+                #     if 'is_published' in template_vals:
+                #         if template_vals['is_published']:
+                #             self._log_sync_message(f"Updated existing product publication status to published: {shopify_product['title']}")
+                #         else:
+                #             self._log_sync_message(f"Updated existing product publication status to unpublished: {shopify_product['title']}")
 
             except Exception as e:
                 self._log_sync_message(f"Error updating existing product template: {str(e)}", 'error')
@@ -874,24 +872,20 @@ class ShopifySync(models.Model):
     def _save_product_variant(self, product_template, variant, shopify_product=None):
         """Save product variant with proper attributes"""
         shopify_variant_id = str(variant['id'])
+        sku = variant.get('sku')
 
-        # Check if variant already exists by Shopify variant ID
+        # Find by shopify_variant_id field
         existing_variant = self.env['product.product'].sudo().search([
-            ('default_code', '=', f"SHOPIFY_VAR_{shopify_variant_id}")
+            ('shopify_variant_id', '=', shopify_variant_id)
         ], limit=1)
 
-        # ENABLE ATTRIBUTE PROCESSING BUT DISABLE VARIANT COMBINATIONS
-        # Process attributes for template but don't assign to variants to avoid constraint violations
-        attribute_value_ids = []
-        if not existing_variant:
-            # Only process attributes for new variants, and only for template setup
-            try:
-                self._process_variant_attributes_safe(variant, product_template, shopify_product)
-                self._log_sync_message(f"Processed attributes for template (variant combinations disabled) for variant {shopify_variant_id}", 'info')
-            except Exception as e:
-                self._log_sync_message(f"Error processing attributes: {str(e)}", 'warning')
-        else:
-            self._log_sync_message(f"Skipping attribute processing for existing variant {shopify_variant_id}", 'info')
+        variant_vals = {
+            'shopify_variant_id': shopify_variant_id,
+            'default_code': sku or shopify_variant_id,  # Use SKU if available
+            'list_price': float(variant.get('price', 0)),
+            'standard_price': float(variant.get('compare_at_price', 0)) if variant.get('compare_at_price') else float(variant.get('price', 0)),
+            'weight': float(variant.get('weight', 0)),
+        }
 
         # Handle barcode carefully to avoid duplicates
         shopify_barcode = variant.get('barcode')
@@ -910,22 +904,9 @@ class ShopifySync(models.Model):
             else:
                 barcode_to_use = shopify_barcode
 
-        variant_vals = {
-            'default_code': f"SHOPIFY_VAR_{shopify_variant_id}",
-            'list_price': float(variant.get('price', 0)),
-            'standard_price': float(variant.get('compare_at_price', 0)) if variant.get('compare_at_price') else float(variant.get('price', 0)),
-            'weight': float(variant.get('weight', 0)),
-        }
-
         # Only set barcode if it's safe to do so
         if barcode_to_use:
             variant_vals['barcode'] = barcode_to_use
-
-        # ATTRIBUTE PROCESSING DISABLED - Skip all attribute-related fields to avoid constraint violations
-        # Remove any attribute-related fields that might cause constraint violations
-        variant_vals_safe = {k: v for k, v in variant_vals.items()
-                           if k not in ['product_template_attribute_value_ids', 'combination_indices']}
-        variant_vals = variant_vals_safe
 
         if existing_variant:
             # Check if the existing variant is already linked to the correct template
@@ -1533,19 +1514,17 @@ class ShopifySync(models.Model):
 
     def _create_order_line(self, sale_order, line_item):
         """Create sale order line from Shopify line item"""
-        # Find product by variant ID or SKU
-        variant_id = line_item.get('id')
         sku = line_item.get('sku')
+        variant_id = line_item.get('id')
 
         product = None
-        if variant_id:
+        if sku:
             product = self.env['product.product'].sudo().search([
-                ('default_code', '=', f"SHOPIFY_VAR_{variant_id}")
+                ('default_code', '=', sku)
             ], limit=1)
-
         if not product and variant_id:
             product = self.env['product.product'].sudo().search([
-                ('default_code', '=', f"SHOPIFY_VAR_{variant_id}")
+                ('shopify_variant_id', '=', str(variant_id))
             ], limit=1)
 
         # log product

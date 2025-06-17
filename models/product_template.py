@@ -19,6 +19,10 @@ class ProductTemplate(models.Model):
         string='Product Description (HTML)',
         help='The HTML description of the product from Shopify'
     )
+    shopify_id = fields.Char(
+        string='Shopify Product ID',
+        help='Original Shopify product ID for synchronization'
+    )
 
 
 class ProductProduct(models.Model):
@@ -28,4 +32,8 @@ class ProductProduct(models.Model):
     x_shopify_variant_updated_at = fields.Datetime(
         string='Shopify Variant Last Updated',
         help='Timestamp when this variant was last updated in Shopify'
+    )
+    shopify_variant_id = fields.Char(
+        string='Shopify Variant ID',
+        help='Original Shopify variant ID for synchronization'
     )
