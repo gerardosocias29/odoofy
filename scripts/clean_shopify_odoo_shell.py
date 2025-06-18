@@ -2,44 +2,36 @@
 """
 Odoo shell script to clean Shopify data
 Run with: python3 odoo-bin shell -c odoo.conf --shell-interface ipython
-Then execute: exec(open('scripts/clean_shopify_odoo_shell.py').read())
+Then execute: exec(open('addons/odoofy/scripts/clean_shopify_odoo_shell.py').read())
 """
 
 print("🧹 Starting Shopify data cleanup via Odoo shell...")
 
-# 1. Delete related stock quants for Shopify products
-print("Deleting related stock quants for Shopify products...")
+# 1. Identify Shopify products and variants
 shopify_products = env['product.template'].search([('default_code', 'like', 'SHOPIFY_%')])
 shopify_variants = env['product.product'].search([('default_code', 'like', 'SHOPIFY_%')])
 
-# Delete stock quants
+# 2. Delete related sale order lines
+print("Deleting sale order lines for Shopify products...")
+order_lines = env['sale.order.line'].search([('product_id', 'in', shopify_variants.ids)])
+order_line_count = len(order_lines)
+order_lines.sudo().unlink()
+print(f"   ✅ Deleted {order_line_count} sale order lines")
+
+# 3. Delete related stock quants
+print("Deleting related stock quants for Shopify products...")
 stock_quants = env['stock.quant'].search([('product_id', 'in', shopify_variants.ids)])
 quant_count = len(stock_quants)
 stock_quants.sudo().unlink()
 print(f"   ✅ Deleted {quant_count} stock quants")
 
-# Now delete products as before
-print("Deleting Shopify products...")
-product_count = len(shopify_products)
-shopify_products.sudo().unlink()
-print(f"   ✅ Deleted {product_count} product templates")
-
-print("Deleting Shopify variants...")
-variant_count = len(shopify_variants)
-shopify_variants.sudo().unlink()
-print(f"   ✅ Deleted {variant_count} product variants")
-
-# 2. Delete Shopify orders
+# 4. Cancel and delete Shopify orders
 print("Deleting Shopify orders...")
 shopify_orders = env['sale.order'].search([('client_order_ref', 'like', 'SHOPIFY_%')])
 order_count = len(shopify_orders)
-
-# Cancel orders that are not in 'draft' or 'cancel'
 for order in shopify_orders:
     if order.state not in ('draft', 'cancel'):
         order.sudo().action_cancel()
-
-# Re-search for orders now in 'draft' or 'cancel' state
 orders_to_delete = env['sale.order'].search([
     ('client_order_ref', 'like', 'SHOPIFY_%'),
     ('state', 'in', ['draft', 'cancel'])
@@ -47,14 +39,25 @@ orders_to_delete = env['sale.order'].search([
 orders_to_delete.sudo().unlink()
 print(f"   ✅ Deleted {order_count} orders")
 
-# 3. Delete sync records
+# 5. Delete Shopify product variants and templates
+print("Deleting Shopify variants...")
+variant_count = len(shopify_variants)
+shopify_variants.sudo().unlink()
+print(f"   ✅ Deleted {variant_count} product variants")
+
+print("Deleting Shopify products...")
+product_count = len(shopify_products)
+shopify_products.sudo().unlink()
+print(f"   ✅ Deleted {product_count} product templates")
+
+# 6. Delete sync records
 print("Deleting sync records...")
 sync_records = env['shopify.sync'].search([])
 sync_count = len(sync_records)
-sync_records.unlink()
+sync_records.sudo().unlink()
 print(f"   ✅ Deleted {sync_count} sync records")
 
-# 4. Reset configuration parameters
+# 7. Reset configuration parameters
 print("Resetting configuration parameters...")
 config_param = env['ir.config_parameter'].sudo()
 params_to_reset = [
@@ -64,19 +67,17 @@ params_to_reset = [
     'shopify.total_orders_count',
     'shopify.last_odoo_to_shopify_sync'
 ]
-
 for param in params_to_reset:
     config_param.set_param(param, '')
-
 print(f"   ✅ Reset {len(params_to_reset)} configuration parameters")
 
-# 5. Clean up Shopify attachments
+# 8. Clean up Shopify attachments
 print("Cleaning up attachments...")
 shopify_attachments = env['ir.attachment'].search([
     '|', ('name', 'ilike', 'shopify'), ('name', 'ilike', 'SHOPIFY')
 ])
 attachment_count = len(shopify_attachments)
-shopify_attachments.unlink()
+shopify_attachments.sudo().unlink()
 print(f"   ✅ Deleted {attachment_count} attachments")
 
 # Commit changes
@@ -87,6 +88,7 @@ print(f"Summary:")
 print(f"  - Products deleted: {product_count}")
 print(f"  - Variants deleted: {variant_count}")
 print(f"  - Orders deleted: {order_count}")
+print(f"  - Sale order lines deleted: {order_line_count}")
 print(f"  - Sync records deleted: {sync_count}")
 print(f"  - Attachments deleted: {attachment_count}")
 print(f"  - Config parameters reset: {len(params_to_reset)}")
