@@ -32,6 +32,13 @@ pr_line_count = len(pr_lines)
 pr_lines.sudo().unlink()
 print(f"   ✅ Deleted {pr_line_count} purchase requisition lines")
 
+# Delete purchase order lines for Shopify products
+print("Deleting purchase order lines for Shopify products...")
+po_lines = env['purchase.order.line'].search([('product_id', 'in', shopify_variants.ids)])
+po_line_count = len(po_lines)
+po_lines.sudo().unlink()
+print(f"   ✅ Deleted {po_line_count} purchase order lines")
+
 # 5. Cancel and delete Shopify orders
 print("Deleting Shopify orders...")
 shopify_orders = env['sale.order'].search([('client_order_ref', 'like', 'SHOPIFY_%')])
@@ -101,4 +108,5 @@ print(f"  - Attachments deleted: {attachment_count}")
 print(f"  - Config parameters reset: {len(params_to_reset)}")
 print(f"  - Stock quants deleted: {quant_count}")
 print(f"  - Purchase requisition lines deleted: {pr_line_count}")
+print(f"  - Purchase order lines deleted: {po_line_count}")
 print("\n✨ Ready for fresh Shopify sync with new timestamp-based system!")
