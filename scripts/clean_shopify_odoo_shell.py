@@ -25,6 +25,13 @@ quant_count = len(stock_quants)
 stock_quants.sudo().unlink()
 print(f"   ✅ Deleted {quant_count} stock quants")
 
+# Delete stock moves for Shopify products
+print("Deleting stock moves for Shopify products...")
+stock_moves = env['stock.move'].search([('product_id', 'in', shopify_variants.ids)])
+stock_move_count = len(stock_moves)
+stock_moves.sudo().unlink()
+print(f"   ✅ Deleted {stock_move_count} stock moves")
+
 # 4. Delete purchase requisition lines for Shopify products
 print("Deleting purchase requisition lines for Shopify products...")
 pr_lines = env['purchase.requisition.line'].search([('product_id', 'in', shopify_variants.ids)])
@@ -53,6 +60,13 @@ print("Deleting account move lines for Shopify products...")
 aml_line_count = len(aml_lines)
 aml_lines.sudo().unlink()
 print(f"   ✅ Deleted {aml_line_count} account move lines")
+
+# Delete stock moves for Shopify products
+print("Deleting stock moves for Shopify products...")
+stock_moves = env['stock.move'].search([('product_id', 'in', shopify_variants.ids)])
+stock_move_count = len(stock_moves)
+stock_moves.sudo().unlink()
+print(f"   ✅ Deleted {stock_move_count} stock moves")
 
 # 5. Cancel and delete Shopify orders
 print("Deleting Shopify orders...")
@@ -125,4 +139,5 @@ print(f"  - Stock quants deleted: {quant_count}")
 print(f"  - Purchase requisition lines deleted: {pr_line_count}")
 print(f"  - Purchase order lines deleted: {po_line_count}")
 print(f"  - Account move lines deleted: {aml_line_count}")
+print(f"  - Stock moves deleted: {stock_move_count}")
 print("\n✨ Ready for fresh Shopify sync with new timestamp-based system!")
