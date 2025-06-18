@@ -39,9 +39,17 @@ po_line_count = len(po_lines)
 po_lines.sudo().unlink()
 print(f"   ✅ Deleted {po_line_count} purchase order lines")
 
-# Delete account move lines for Shopify products (DANGEROUS: only for test/dev databases!)
-print("Deleting account move lines for Shopify products...")
+# Reset parent journal entries to draft before deleting lines (DANGEROUS: test/dev only!)
+print("Resetting parent journal entries to draft...")
 aml_lines = env['account.move.line'].search([('product_id', 'in', shopify_variants.ids)])
+parent_moves = aml_lines.mapped('move_id').filtered(lambda m: m.state == 'posted')
+move_count = len(parent_moves)
+if move_count:
+    parent_moves.sudo().button_draft()
+print(f"   ✅ Reset {move_count} journal entries to draft")
+
+# Now delete account move lines
+print("Deleting account move lines for Shopify products...")
 aml_line_count = len(aml_lines)
 aml_lines.sudo().unlink()
 print(f"   ✅ Deleted {aml_line_count} account move lines")
