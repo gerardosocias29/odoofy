@@ -1,0 +1,23 @@
+<odoo>
+    <record id="view_order_tree_shopify" model="ir.ui.view">
+        <field name="name">sale.order.tree.shopify</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_tree"/>
+        <field name="arch" type="xml">
+            <field name="name" position="after">
+                <field name="shopify_order_number"/>
+            </field>
+        </field>
+    </record>
+
+    <record id="view_order_form_shopify" model="ir.ui.view">
+        <field name="name">sale.order.form.shopify</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+            <field name="name" position="after">
+                <field name="shopify_order_number"/>
+            </field>
+        </field>
+    </record>
+</odoo>

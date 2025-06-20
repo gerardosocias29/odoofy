@@ -1346,6 +1346,7 @@ class ShopifySync(models.Model):
                     f"Error parsing created_at for order {shopify_order.get('name')}: {str(e)}", 'warning'
                 )
 
+        shopify_order_number = shopify_order.get('name')  # e.g. "#1001"
         order_vals = {
             'partner_id': customer.id,
             'client_order_ref': f"SHOPIFY_{shopify_order_id}",
@@ -1353,6 +1354,7 @@ class ShopifySync(models.Model):
             'date_order': date_order,
             'state': 'draft',
             'currency_id': self._get_currency_id(shopify_order.get('currency', 'USD')),
+            'shopify_order_number': shopify_order_number,  # <-- add this line
         }
 
         sale_order = self.env['sale.order'].sudo().create(order_vals)
@@ -1931,3 +1933,9 @@ class ShopifySync(models.Model):
         except Exception as e:
             self._log_sync_message(f"Unexpected error updating variant: {str(e)}", 'error')
             raise
+
+
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    shopify_order_number = fields.Char(string="Shopify Order Number", help="The order number as shown in Shopify (e.g. #1001)")
