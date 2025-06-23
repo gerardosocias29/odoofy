@@ -1375,6 +1375,7 @@ class ShopifySync(models.Model):
             'currency_id': self._get_currency_id(shopify_order.get('currency', 'USD')),
             'shopify_order_number': shopify_order_number,
             'carrier_id': carrier_id,  # <-- assign carrier if found/created
+            'note': shopify_order.get('note', ''),
         }
 
         sale_order = self.env['sale.order'].sudo().create(order_vals)
