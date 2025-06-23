@@ -1413,31 +1413,36 @@ class ShopifySync(models.Model):
             })
             invoice.action_post()
 
-            # Register payment
-            # payment_amount = shopify_order.get('total_price')
-            # if payment_amount:
-            #     payment_method_id = self.env['account.journal'].search([('type', '=', 'bank')], limit=1).id  # Assuming bank journal for Shopify payments
-            #     payment = self.env['account.payment'].sudo().create({
-            #         'amount': float(payment_amount),
-            #         'payment_type': 'inbound',
-            #         'partner_type': 'customer',
-            #         'partner_id': sale_order.partner_id.id,
-            #         'journal_id': payment_method_id,
-            #         'payment_method_id': self.env.ref('account.account_payment_method_manual_in').id,  # Manual payment method
-            #         'communication': sale_order.name,
-            #         'currency_id': sale_order.currency_id.id,
-            #     })
-            #     payment.action_post()
+            # --- Register payment with Shopify payment method ---
+            shopify_gateway = shopify_order.get('gateway', 'Shopify')
+            journal = self.env['account.journal'].sudo().search([
+                ('name', '=', shopify_gateway),
+                ('type', '=', 'bank')
+            ], limit=1)
+            if not journal:
+                journal = self.env['account.journal'].sudo().create({
+                    'name': shopify_gateway,
+                    'type': 'bank',
+                    'code': shopify_gateway[:5].upper(),
+                })
+                self._log_sync_message(f"Auto-created payment journal: {shopify_gateway}")
 
-            #     # Reconcile payment with invoice
-            #     for move_line in invoice.line_ids.filtered(lambda l: l.account_id == invoice.account_id):
-            #         payment_line = payment.line_ids.filtered(lambda l: l.account_id == invoice.account_id)
-            #         (payment_line + move_line).reconcile()
-
-            #     self._log_sync_message(f"Registered payment for invoice: {invoice.name}")
-            # else:
-            #     self._log_sync_message(f"No payment amount found for order {shopify_order.get('name')}, skipping payment registration.")
-
+            payment = self.env['account.payment'].sudo().create({
+                'amount': invoice.amount_total,
+                'payment_type': 'inbound',
+                'partner_type': 'customer',
+                'partner_id': sale_order.partner_id.id,
+                'journal_id': journal.id,
+                'payment_method_id': self.env.ref('account.account_payment_method_manual_in').id,
+                'communication': sale_order.name,
+                'currency_id': sale_order.currency_id.id,
+            })
+            payment.action_post()
+            
+            # Reconcile payment with invoice
+            (payment.line_ids + invoice.line_ids).filtered(lambda l: l.account_id == invoice.account_id).reconcile()
+            self._log_sync_message(f"Registered payment for invoice: {invoice.name} using journal: {journal.name}")
+            
             # Check ir.config_parameter before sending invoice
             send_invoice = self.env['ir.config_parameter'].sudo().get_param('odoofy.send_invoice_on_payment')
             if send_invoice == 'True' or send_invoice == True:
