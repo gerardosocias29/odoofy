@@ -100,16 +100,17 @@ class ShopifySync(models.Model):
 
             config_param = self.env['ir.config_parameter'].sudo()
             last_updated_at = config_param.get_param('shopify.last_updated_at')
+            shopify_product_limit = int(config_param.get_param('shopify.product_sync_limit', 10))
 
             # Fetch only ONE batch per cron run to avoid timeouts
             if not last_updated_at:
                 # First sync - fetch products created this year (single batch)
                 sync_record._log_sync_message("First sync: fetching single batch of products created this year")
-                products = sync_record.fetch_single_batch_products(limit=10, created_this_year=True)
+                products = sync_record.fetch_single_batch_products(shopify_product_limit, created_this_year=True)
             else:
                 # Incremental sync - fetch products updated since last sync (single batch)
                 sync_record._log_sync_message(f"Incremental sync: fetching single batch updated since {last_updated_at}")
-                products = sync_record.fetch_single_batch_products(limit=10, updated_at_min=last_updated_at)
+                products = sync_record.fetch_single_batch_products(shopify_product_limit, updated_at_min=last_updated_at)
 
             if products:
                 # Process this single batch
