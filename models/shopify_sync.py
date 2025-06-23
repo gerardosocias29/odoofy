@@ -1515,7 +1515,6 @@ class ShopifySync(models.Model):
         return self.env['res.partner'].sudo().create(customer_vals)
 
     def _create_order_line(self, sale_order, line_item):
-        """Create sale order line from Shopify line item"""
         sku = line_item.get('sku')
         variant_id = line_item.get('id')
 
@@ -1535,6 +1534,17 @@ class ShopifySync(models.Model):
         else:
             self._log_sync_message(f"Product not found for line item {line_item.get('title')}, creating new product", 'warning')
 
+        # Tax mapping
+        tax_ids = []
+        for tax in line_item.get('tax_lines', []):
+            # Shopify rate is decimal (e.g., 0.07 for 7%)
+            odoo_tax = self.env['account.tax'].sudo().search([
+                ('amount', '=', float(tax.get('rate', 0)) * 100),
+                ('type_tax_use', '=', 'sale')
+            ], limit=1)
+            if odoo_tax:
+                tax_ids.append(odoo_tax.id)
+
         # Create order line
         line_vals = {
             'order_id': sale_order.id,
@@ -1542,7 +1552,8 @@ class ShopifySync(models.Model):
             'name': line_item.get('title', product.name if product else 'Shopify Product'),
             'product_uom_qty': float(line_item.get('quantity', 1)),
             'price_unit': float(line_item.get('price', 0)),
-            'product_uom': product.uom_id.id if product else self.env.ref('uom.product_uom_unit').id
+            'product_uom': product.uom_id.id if product else self.env.ref('uom.product_uom_unit').id,
+            'tax_id': [(6, 0, tax_ids)] if tax_ids else False,
         }
 
         return self.env['sale.order.line'].sudo().create(line_vals)
