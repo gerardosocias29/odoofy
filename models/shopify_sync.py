@@ -1348,6 +1348,24 @@ class ShopifySync(models.Model):
                 )
 
         shopify_order_number = shopify_order.get('name')  # e.g. "#1001"
+
+        # --- Delivery Method Mapping ---
+        carrier_id = False
+        shipping_lines = shopify_order.get('shipping_lines', [])
+        if shipping_lines:
+            shipping_title = shipping_lines[0].get('title')
+            if shipping_title:
+                carrier = self.env['delivery.carrier'].sudo().search([('name', '=', shipping_title)], limit=1)
+                if not carrier:
+                    # Auto-create delivery method if not exists
+                    carrier = self.env['delivery.carrier'].sudo().create({
+                        'name': shipping_title,
+                        'delivery_type': 'fixed',  # or another type as needed
+                        'fixed_price': float(shipping_lines[0].get('price', 0.0)),
+                    })
+                    self._log_sync_message(f"Auto-created delivery method: {shipping_title}")
+                carrier_id = carrier.id
+
         order_vals = {
             'partner_id': customer.id,
             'client_order_ref': f"SHOPIFY_{shopify_order_id}",
@@ -1355,7 +1373,8 @@ class ShopifySync(models.Model):
             'date_order': date_order,
             'state': 'draft',
             'currency_id': self._get_currency_id(shopify_order.get('currency', 'USD')),
-            'shopify_order_number': shopify_order_number,  # <-- add this line
+            'shopify_order_number': shopify_order_number,
+            'carrier_id': carrier_id,  # <-- assign carrier if found/created
         }
 
         sale_order = self.env['sale.order'].sudo().create(order_vals)
