@@ -1466,7 +1466,7 @@ class ShopifySync(models.Model):
                 'partner_id': sale_order.partner_id.id,
                 'journal_id': journal.id,
                 'payment_method_id': self.env.ref('account.account_payment_method_manual_in').id,
-                'communication': sale_order.name,
+                'ref': sale_order.name,
                 'currency_id': sale_order.currency_id.id,
             })
             payment.action_post()
