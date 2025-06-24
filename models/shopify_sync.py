@@ -1415,11 +1415,17 @@ class ShopifySync(models.Model):
             sale_order.sudo().action_cancel()
             self._log_sync_message(f"Order {shopify_order.get('name')} is cancelled, setting to cancel state.")
 
-        # Confirm order if paid and create invoice
         elif shopify_order.get('financial_status') == 'paid':
             sale_order.sudo().action_confirm()
 
             self._log_sync_message(f"Shopify order data: {shopify_order}")
+
+            # Check for order lines before creating invoice
+            if not sale_order.order_line:
+                self._log_sync_message(
+                    f"Order {shopify_order.get('name')} has no order lines, skipping invoice creation.", 'warning'
+                )
+                return sale_order
 
             # Create invoice
             invoice = self.env['account.move'].sudo().create({
