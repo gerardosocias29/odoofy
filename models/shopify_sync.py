@@ -1615,7 +1615,50 @@ class ShopifySync(models.Model):
             return self.env['sale.order.line'].sudo().create(line_vals)
         
         else:
-            self._log_sync_message(f"Product not found for line item {line_item.get('title')}, creating new product", 'warning')
+            self._log_sync_message(f"Product not found for line item {line_item.get('title')}, attempting to fetch and create product", 'warning')
+            # Try to fetch the full product data from Shopify
+            shopify_product_id = line_item.get('product_id')
+            if shopify_product_id:
+                try:
+                    headers = self._get_shopify_headers()
+                    url = self._get_shopify_url(f'products/{shopify_product_id}.json')
+                    response = requests.get(url, headers=headers, timeout=30)
+                    response.raise_for_status()
+                    product_data = response.json().get('product')
+                    if product_data:
+                        self.save_products_to_odoo([product_data])
+                        # Try to find the product again after creation
+                        product = self.env['product.product'].sudo().search([
+                            ('default_code', '=', sku)
+                        ], limit=1)
+                        if not product and variant_id:
+                            product = self.env['product.product'].sudo().search([
+                                ('shopify_variant_id', '=', str(variant_id))
+                            ], limit=1)
+                        if product:
+                            # Now create the order line
+                            tax_ids = []
+                            for tax in line_item.get('tax_lines', []):
+                                odoo_tax = self.env['account.tax'].sudo().search([
+                                    ('amount', '=', float(tax.get('rate', 0)) * 100),
+                                    ('type_tax_use', '=', 'sale')
+                                ], limit=1)
+                                if odoo_tax:
+                                    tax_ids.append(odoo_tax.id)
+                            line_vals = {
+                                'order_id': sale_order.id,
+                                'product_id': product.id,
+                                'name': line_item.get('title', product.name),
+                                'product_uom_qty': float(line_item.get('quantity', 1)),
+                                'price_unit': float(line_item.get('price', 0)),
+                                'product_uom': product.uom_id.id,
+                                'tax_id': [(6, 0, tax_ids)] if tax_ids else False,
+                            }
+                            return self.env['sale.order.line'].sudo().create(line_vals)
+                except Exception as e:
+                    self._log_sync_message(f"Failed to fetch/create product for line item {line_item.get('title')}: {str(e)}", 'error')
+            else:
+                self._log_sync_message(f"No product_id in line item {line_item.get('title')}, cannot create product", 'error')
             return False
 
     # ===== UTILITY METHODS =====
