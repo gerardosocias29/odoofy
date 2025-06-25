@@ -531,8 +531,9 @@ class ShopifySync(models.Model):
 
         # Check if product template already exists by Shopify ID (primary check)
         shopify_id = str(shopify_product['id'])
+        sku = shopify_product.get('variants', [{}])[0].get('sku', '')
         existing_template = self.env['product.template'].sudo().search([
-            ('default_code', '=', f"SHOPIFY_{shopify_id}")
+            ('default_code', '=', {sku})
         ], limit=1)
 
         # If no Shopify ID match, check by name (secondary check for manual products)
@@ -544,19 +545,18 @@ class ShopifySync(models.Model):
 
             if existing_template_name:
                 # Update the existing product with Shopify ID to link it
-                existing_template_name.sudo().write({'default_code': f"SHOPIFY_{shopify_id}"})
+                existing_template_name.sudo().write({'default_code': f"{sku}"})
                 existing_template = existing_template_name
-                self._log_sync_message(f"Linked existing product '{shopify_product['title']}' to Shopify ID {shopify_id}")
+                self._log_sync_message(f"Linked existing product '{shopify_product['title']}' to Sku: {sku} - Shopify ID {shopify_id}")
             else:
-                # Check if there's already a Shopify product with the same name but different ID
+                # Check if there's already a Shopify product with the same name but different sku
                 duplicate_shopify_product = self.env['product.template'].sudo().search([
                     ('name', '=', shopify_product['title']),
-                    ('default_code', 'like', 'SHOPIFY_%'),
-                    ('default_code', '!=', f"SHOPIFY_{shopify_id}")
+                    ('default_code', 'like', sku),
                 ], limit=1)
 
                 if duplicate_shopify_product:
-                    self._log_sync_message(f"Product with same name but different Shopify ID already exists: {shopify_product['title']} (existing: {duplicate_shopify_product.default_code}, new: SHOPIFY_{shopify_id})", 'warning')
+                    self._log_sync_message(f"Product with same name but different SKU already exists: {shopify_product['title']} (existing: {duplicate_shopify_product.default_code}, new: {sku})", 'warning')
                     # Skip this product to avoid creating duplicates
                     self._log_sync_message(f"Skipping product {shopify_product['title']} to avoid duplicate creation")
                     return
@@ -564,17 +564,19 @@ class ShopifySync(models.Model):
         # Determine if this is an update or creation
         is_update = bool(existing_template)
         action_type = "Updating" if is_update else "Creating"
-        self._log_sync_message(f"{action_type} product: {shopify_product['title']} (Shopify ID: {shopify_id})")
+        self._log_sync_message(f"{action_type} product: {shopify_product['title']} Sku: {sku} (Shopify ID: {shopify_id})")
 
         # Prepare product template data
         template_vals = {
             'name': shopify_product['title'],
-            'default_code': f"SHOPIFY_{shopify_id}",
+            'default_code': sku,
+            'shopify_id': shopify_id,
             'categ_id': category.id,
             'type': 'product',
             'sale_ok': True,
             'purchase_ok': bool(vendor),
             'detailed_type': 'product',
+            'active': True,
         }
         template_vals['description_html'] = shopify_product.get('body_html')
 
@@ -704,7 +706,12 @@ class ShopifySync(models.Model):
         # Handle variants
         variants = shopify_product.get('variants', [])
         created_variants = []
+        processed_variant_ids = set()  # Add this line
         for variant in variants:
+            shopify_variant_id = str(variant['id'])
+            if shopify_variant_id in processed_variant_ids:
+                continue  # Skip duplicate variant
+            processed_variant_ids.add(shopify_variant_id)
             variant_obj = self._save_product_variant(product_template, variant, shopify_product)
             if variant_obj:
                 created_variants.append(variant_obj)
@@ -1344,7 +1351,7 @@ class ShopifySync(models.Model):
         ], limit=1)
 
         if existing_order:
-            self._log_sync_message(f"Order {shopify_order.get('name')} already exists with ID: {existing_order.id}, skipping")
+            self._log_sync_message(f"Order {shopify_order.get('name')} already exists with ID: {existing_order.id,}, skipping")
             return existing_order
 
         # Get or create customer
@@ -1411,6 +1418,11 @@ class ShopifySync(models.Model):
         for line_item in line_items:
             self._create_order_line(sale_order, line_item)
 
+        # skip sale order confirmation if no lines
+        if not sale_order.order_line:
+            self._log_sync_message(f"Order {shopify_order.get('name')} has no order lines, skipping confirmation.", 'warning')
+            return sale_order
+
         if shopify_order.get('financial_status') == 'cancelled':
             sale_order.sudo().action_cancel()
             self._log_sync_message(f"Order {shopify_order.get('name')} is cancelled, setting to cancel state.")
@@ -1428,7 +1440,11 @@ class ShopifySync(models.Model):
                 return sale_order
 
             # Create invoice
-            invoice = self.env['account.move'].sudo().create({
+            journal = sale_order.journal_id or self.env['account.journal'].search([('type', '=', 'sale')], limit=1)
+            account = journal.default_account_id or journal.company_id.account_sale_default
+            account_id = account.id if account else False
+
+            invoice_vals = {
                 'move_type': 'out_invoice',
                 'invoice_date': fields.Date.today(),
                 'partner_id': sale_order.partner_id.id,
@@ -1439,10 +1455,15 @@ class ShopifySync(models.Model):
                     'quantity': line.product_uom_qty,
                     'price_unit': line.price_unit,
                     'product_id': line.product_id.id,
+                    'account_id': line.product_id.property_account_income_id.id or line.product_id.categ_id.property_account_income_categ_id.id or account_id,
                     'tax_ids': [(6, 0, line.tax_id.ids)],
                     'sale_line_ids': [(6, 0, [line.id])],
                 }) for line in sale_order.order_line],
-            })
+            }
+            invoice = self.env['account.move'].sudo().create(invoice_vals)
+            # To get the account from the first invoice line (if needed):
+            account_id = invoice.line_ids and invoice.line_ids[0].account_id.id or False
+
             invoice.action_post()
 
             # --- Register payment with Shopify payment method ---
@@ -1472,7 +1493,10 @@ class ShopifySync(models.Model):
             payment.action_post()
             
             # Reconcile payment with invoice
-            (payment.line_ids + invoice.line_ids).filtered(lambda l: l.account_id == invoice.account_id).reconcile()
+            account = self.env['account.account'].browse(account_id)
+            if not account.reconcile:
+                account.sudo().write({'reconcile': True})
+            (payment.line_ids + invoice.line_ids).filtered(lambda l: l.account_id.id == account_id).reconcile()
             self._log_sync_message(f"Registered payment for invoice: {invoice.name} using journal: {journal.name}")
             
             # Check ir.config_parameter before sending invoice
@@ -1573,9 +1597,12 @@ class ShopifySync(models.Model):
         return self.env['res.partner'].sudo().create(customer_vals)
 
     def _create_order_line(self, sale_order, line_item):
+        self._log_sync_message(f"Processing line item: {line_item}")
+
         sku = line_item.get('sku')
         variant_id = line_item.get('id')
-
+        shopify_product_id = line_item.get('product_id')
+        self._log_sync_message(f"shopify_product_id: {shopify_product_id}")
         product = None
         if sku:
             product = self.env['product.product'].sudo().search([
@@ -1602,10 +1629,14 @@ class ShopifySync(models.Model):
                     tax_ids.append(odoo_tax.id)
 
             # Create order line
+            if not product:
+                self._log_sync_message(f"Skipping line item {line_item.get('title')} because product is None", 'warning')
+                return None
+
             line_vals = {
                 'order_id': sale_order.id,
-                'product_id': product.id if product else False,
-                'name': line_item.get('title', product.name if product else 'Shopify Product'),
+                'product_id': product.id,
+                'name': line_item.get('title', product.name),
                 'product_uom_qty': float(line_item.get('quantity', 1)),
                 'price_unit': float(line_item.get('price', 0)),
                 'product_uom': product.uom_id.id if product else self.env.ref('uom.product_uom_unit').id,
@@ -1617,7 +1648,11 @@ class ShopifySync(models.Model):
         else:
             self._log_sync_message(f"Product not found for line item {line_item.get('title')}, attempting to fetch and create product", 'warning')
             # Try to fetch the full product data from Shopify
-            shopify_product_id = line_item.get('product_id')
+            self._log_sync_message(f"Attempting to fetch product with Shopify ID: {shopify_product_id} for line item {line_item.get('title')}")
+            if not line_item.get('product_exists', True):
+                self._log_sync_message(f"Product does not exist in Shopify for line item {line_item.get('title')}, skipping", 'warning')
+                return None
+
             if shopify_product_id:
                 try:
                     headers = self._get_shopify_headers()
@@ -1627,6 +1662,7 @@ class ShopifySync(models.Model):
                     product_data = response.json().get('product')
                     if product_data:
                         self.save_products_to_odoo([product_data])
+                        self._log_sync_message(f"Product {product_data.get('title')} created from Shopify data for line item {line_item.get('title')}")
                         # Try to find the product again after creation
                         product = self.env['product.product'].sudo().search([
                             ('default_code', '=', sku)
@@ -1655,11 +1691,20 @@ class ShopifySync(models.Model):
                                 'tax_id': [(6, 0, tax_ids)] if tax_ids else False,
                             }
                             return self.env['sale.order.line'].sudo().create(line_vals)
+                    else:
+                        self._log_sync_message(f"Product data not found for Shopify ID: {shopify_product_id} in line item {line_item.get('title')}", 'error')
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 404:
+                        self._log_sync_message(f"Product not found on Shopify with ID: {shopify_product_id} for line item {line_item.get('title')}, skipping", 'warning')
+                        return None
+                    else:
+                        self._log_sync_message(f"Failed to fetch/create product for line item {line_item.get('title')}: {str(e)}", 'error')
                 except Exception as e:
                     self._log_sync_message(f"Failed to fetch/create product for line item {line_item.get('title')}: {str(e)}", 'error')
             else:
-                self._log_sync_message(f"No product_id in line item {line_item.get('title')}, cannot create product", 'error')
-            return False
+                self._log_sync_message(f"No shopify_product_id in line item {line_item.get('title')}", 'warning')
+        
+        return False
 
     # ===== UTILITY METHODS =====
 
