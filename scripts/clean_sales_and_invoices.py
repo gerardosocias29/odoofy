@@ -2,7 +2,21 @@ print("💣 Executing raw SQL deletes to wipe Sales Orders and Invoices...")
 
 cr = env.cr
 
-# === Step 1: Delete account move lines first (tax & base lines)
+# === Step 0: Delete reconciliation records
+cr.execute("""
+    DELETE FROM account_partial_reconcile 
+    WHERE debit_move_id IN (
+        SELECT id FROM account_move_line WHERE move_id IN (
+            SELECT id FROM account_move WHERE move_type = 'out_invoice'
+        )
+    ) OR credit_move_id IN (
+        SELECT id FROM account_move_line WHERE move_id IN (
+            SELECT id FROM account_move WHERE move_type = 'out_invoice'
+        )
+    )
+""")
+
+# === Step 1: Delete account move lines
 cr.execute("DELETE FROM account_move_line WHERE move_id IN (SELECT id FROM account_move WHERE move_type = 'out_invoice')")
 
 # === Step 2: Delete account moves (invoices)
@@ -24,4 +38,4 @@ cr.execute("DELETE FROM mail_message WHERE model IN ('sale.order', 'account.move
 # Commit changes
 cr.commit()
 
-print("✅ All sales orders, invoices, related lines, stock moves, and chatter deleted via raw SQL.")
+print("✅ All sales orders, invoices, reconciliations, related lines, stock moves, and chatter deleted via raw SQL.")
