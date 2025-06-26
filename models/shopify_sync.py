@@ -1553,14 +1553,13 @@ class ShopifySync(models.Model):
 
     def _get_or_create_customer(self, shopify_order):
         """Get or create customer from Shopify order"""
-        customer_data = shopify_order.get('customer', {})
+        customer_data = shopify_order.get('customer') or {}
         email = customer_data.get('email') or shopify_order.get('email')
 
         if not email:
             # Create anonymous customer
             return self.env['res.partner'].sudo().create({
                 'name': shopify_order.get('name'),
-                'name': f"{shopify_order.get('name')}",
                 'is_company': False,
                 'customer_rank': 1,
             })
