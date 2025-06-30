@@ -1160,16 +1160,13 @@ class ShopifySync(models.Model):
                 sync_record._log_sync_message(f"Incremental sync: fetching single batch updated since {last_updated_at}")
                 orders = sync_record.fetch_single_batch_orders(limit=10, updated_at_min=last_updated_at)
 
+            # Always update the timestamp if any orders are returned, even if all are skipped
             if orders:
-                # Process this single batch
-                # Update timestamp to latest order in this batch
                 latest_updated_at = max(order.get('updated_at', '') for order in orders)
                 if latest_updated_at:
                     sync_record._log_sync_message(f"latest_updated_at raw: {latest_updated_at}")
                     try:
-                        # Convert to UTC
                         from datetime import datetime, timezone
-                        
                         dt = datetime.fromisoformat(latest_updated_at)
                         dt_utc = dt.astimezone(timezone.utc)
                         formatted_updated_at = fields.Datetime.to_string(dt_utc)
@@ -1180,8 +1177,7 @@ class ShopifySync(models.Model):
                         sync_record._log_sync_message(f"Updated last orders sync timestamp to: {formatted_updated_at}")
                     except Exception as e:
                         sync_record._log_sync_message(f"Error converting timestamp: {str(e)}", 'error')
-                    else:
-                        sync_record._log_sync_message(f"Processed batch: {len(orders)} orders. Next cron run will continue from {formatted_updated_at}")
+                    sync_record._log_sync_message(f"Processed batch: {len(orders)} orders. Next cron run will continue from {latest_updated_at}")
 
                 sync_record.save_orders_to_odoo(orders)
             else:
