@@ -1437,7 +1437,7 @@ class ShopifySync(models.Model):
 
             # Create invoice
             journal = sale_order.journal_id or self.env['account.journal'].search([('type', '=', 'sale')], limit=1)
-            account = journal.default_account_id or journal.company_id.account_sale_default
+            account = sale_order.partner_id.property_account_receivable_id
             account_id = account.id if account else False
 
             invoice_vals = {
@@ -1457,9 +1457,6 @@ class ShopifySync(models.Model):
                 }) for line in sale_order.order_line],
             }
             invoice = self.env['account.move'].sudo().create(invoice_vals)
-            # To get the account from the first invoice line (if needed):
-            account_id = invoice.line_ids and invoice.line_ids[0].account_id.id or False
-
             invoice.action_post()
 
             # --- Register payment with Shopify payment method ---
@@ -1487,14 +1484,41 @@ class ShopifySync(models.Model):
                 'currency_id': sale_order.currency_id.id,
             })
             payment.action_post()
-            
-            # Reconcile payment with invoice
-            account = self.env['account.account'].browse(account_id)
+
+            # --- Improved reconciliation with logging ---
+            account = sale_order.partner_id.property_account_receivable_id
+            account_id = account.id if account else False
             if not account.reconcile:
                 account.sudo().write({'reconcile': True})
-            (payment.line_ids + invoice.line_ids).filtered(lambda l: l.account_id.id == account_id).reconcile()
+
+            lines_to_reconcile = (payment.move_id.line_ids + invoice.line_ids).filtered(
+                lambda l: l.account_id.id == account_id and not l.reconciled
+            )
+            self._log_sync_message(
+                f"Reconciling lines for account {account.code if account else 'N/A'}: "
+                f"Payment lines: {[l.id for l in payment.move_id.line_ids]}, "
+                f"Invoice lines: {[l.id for l in invoice.line_ids]}"
+            )
+            if lines_to_reconcile:
+                lines_to_reconcile.reconcile()
+                self._log_sync_message(f"Reconciled lines: {[l.id for l in lines_to_reconcile]}")
+            else:
+                self._log_sync_message(
+                    f"No lines found to reconcile for account {account.code if account else 'N/A'}", 'warning'
+                )
+
+            # Log invoice payment state after reconciliation
+            self._log_sync_message(f"Invoice {invoice.name} payment_state after reconciliation: {invoice.payment_state}")
+
+            if invoice.payment_state != 'paid':
+                self._log_sync_message(
+                    f"WARNING: Invoice {invoice.name} is not marked as paid after reconciliation. "
+                    f"Payment amount: {payment.amount}, Invoice total: {invoice.amount_total}, "
+                    f"Partner: {sale_order.partner_id.name}, Currency: {sale_order.currency_id.name}", 'warning'
+                )
+
             self._log_sync_message(f"Registered payment for invoice: {invoice.name} using journal: {journal.name}")
-            
+
             # Check ir.config_parameter before sending invoice
             send_invoice = self.env['ir.config_parameter'].sudo().get_param('odoofy.send_invoice_on_payment')
             if send_invoice == 'True' or send_invoice == True:
