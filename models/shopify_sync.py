@@ -451,7 +451,7 @@ class ShopifySync(models.Model):
         try:
             # Count orders with Shopify IDs in Odoo
             synced_count = self.env['sale.order'].sudo().search_count([
-                ('client_order_ref', 'like', 'SHOPIFY_%')
+                ('client_order_ref', 'like', 'SHOPIFY_ORDER_%'),
             ])
             return synced_count
         except Exception as e:
@@ -1342,7 +1342,7 @@ class ShopifySync(models.Model):
         # Check if order already exists
         shopify_order_id = str(shopify_order['id'])
         existing_order = self.env['sale.order'].sudo().search([
-            ('client_order_ref', '=', f"SHOPIFY_{shopify_order_id}"),
+            ('client_order_ref', '=', f"SHOPIFY_ORDER_{shopify_order_id}"),
             ('state', '!=', 'cancel')
         ], limit=1)
 
@@ -1397,7 +1397,7 @@ class ShopifySync(models.Model):
 
         order_vals = {
             'partner_id': customer.id,
-            'client_order_ref': f"SHOPIFY_{shopify_order_id}",
+            'client_order_ref': f"SHOPIFY_ORDER_{shopify_order_id}",
             'origin': shopify_order.get('name'),
             'date_order': date_order,
             'state': 'draft',
