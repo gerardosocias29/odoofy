@@ -1603,9 +1603,9 @@ class ShopifySync(models.Model):
             product = self.env['product.product'].sudo().search([
                 ('default_code', '=', sku)
             ], limit=1)
-        if not product and variant_id:
+        if not product and shopify_product_id:
             product = self.env['product.product'].sudo().search([
-                ('shopify_variant_id', '=', str(variant_id))
+                ('shopify_id', '=', str(shopify_product_id))
             ], limit=1)
 
         # log product
