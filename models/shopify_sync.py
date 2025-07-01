@@ -1156,11 +1156,11 @@ class ShopifySync(models.Model):
             if not last_updated_at:
                 # First sync - fetch orders from last 30 days (single batch)
                 sync_record._log_sync_message("First sync: fetching single batch of orders from last 30 days")
-                orders = sync_record.fetch_single_batch_orders(limit=10, last_30_days=True)
+                orders = sync_record.fetch_single_batch_orders(limit=shopify_order_limit, last_30_days=True)
             else:
                 # Incremental sync - fetch orders updated since last sync (single batch)
                 sync_record._log_sync_message(f"Incremental sync: fetching single batch updated since {last_updated_at}")
-                orders = sync_record.fetch_single_batch_orders(limit=10, updated_at_min=last_updated_at)
+                orders = sync_record.fetch_single_batch_orders(limit=shopify_order_limit, updated_at_min=last_updated_at)
 
             # Always update the timestamp if any orders are returned, even if all are skipped
             if orders:
