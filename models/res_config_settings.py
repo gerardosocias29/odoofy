@@ -64,6 +64,8 @@ class ResConfigSettings(models.TransientModel):
             shopify_auto_publish_website=config_param.get_param('shopify.auto_publish_website', False),
             send_invoice_on_payment=config_param.get_param('odoofy.send_invoice_on_payment', False),
             create_user_portal=config_param.get_param('odoofy.create_user_portal', False),
+            shopify_product_sync_limit=config_param.get_param('shopify.product_sync_limit', ''),
+            shopify_order_sync_limit=config_param.get_param('shopify.order_sync_limit', ''),
         )
         return res
 
@@ -80,6 +82,8 @@ class ResConfigSettings(models.TransientModel):
         config_param.set_param('shopify.auto_publish_website', self.shopify_auto_publish_website)
         config_param.set_param('odoofy.send_invoice_on_payment', self.send_invoice_on_payment)
         config_param.set_param('odoofy.create_user_portal', self.create_user_portal)
+        config_param.set_param('shopify.product_sync_limit', self.shopify_product_sync_limit or '')
+        config_param.set_param('shopify.order_sync_limit', self.shopify_order_sync_limit or '')
 
     def test_shopify_connection(self):
         """Test Shopify API connection"""

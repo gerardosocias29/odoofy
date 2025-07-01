@@ -1149,6 +1149,8 @@ class ShopifySync(models.Model):
 
             config_param = self.env['ir.config_parameter'].sudo()
             last_updated_at = config_param.get_param('shopify.orders_last_updated_at')
+            
+            shopify_order_limit = int(config_param.get_param('shopify.order_sync_limit', 10))
 
             # Fetch only ONE batch per cron run to avoid timeouts
             if not last_updated_at:

@@ -96,5 +96,15 @@
             <field name="value">False</field>
         </record>
 
+        <record id="product_sync_limit_param" model="ir.config_parameter">
+            <field name="key">shopify.product_sync_limit</field>
+            <field name="value"></field>
+        </record>
+
+        <record id="order_sync_limit_param" model="ir.config_parameter">
+            <field name="key">shopify.order_sync_limit</field>
+            <field name="value"></field>
+        </record>
+
     </data>
 </odoo>
