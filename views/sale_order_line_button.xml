@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- Inherit the Sales Order form view to add the button to the SO lines -->
+        <record id="view_order_form_inherit_add_po_button" model="ir.ui.view">
+            <field name="name">sale.order.form.inherit.add.po.button</field>
+            <field name="model">sale.order</field>
+            <field name="inherit_id" ref="sale.view_order_form"/>
+            <field name="arch" type="xml">
+                <!--
+                    Find the 'price_subtotal' field in the order line's tree view.
+                    This is a more stable anchor than a button that might be removed or hidden.
+                    We will add our new button right after this field.
+                -->
+                <xpath expr="//field[@name='order_line']/tree/field[@name='price_subtotal']" position="after">
+                    <button name="action_create_purchase_order"
+                            type="object"
+                            icon="fa-shopping-cart"
+                            help="Create or update a Purchase Order for this product."/>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>
