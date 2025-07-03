@@ -631,27 +631,28 @@ class ShopifySync(models.Model):
                 # For existing products, we'll handle vendor addition after the template update
 
             # Enable dropshipping if vendor exists (only for new products or if not already set)
-            try:
-                dropship_route = self.env.ref('stock_dropshipping.route_drop_shipping', raise_if_not_found=False)
-                if dropship_route:
-                    # Check if dropshipping is already enabled
-                    dropship_already_enabled = False
-                    if existing_template and dropship_route.id in existing_template.route_ids.ids:
-                        dropship_already_enabled = True
+            # remove dropshipping logic for now
+            # try:
+            #     dropship_route = self.env.ref('stock_dropshipping.route_drop_shipping', raise_if_not_found=False)
+            #     if dropship_route:
+            #         # Check if dropshipping is already enabled
+            #         dropship_already_enabled = False
+            #         if existing_template and dropship_route.id in existing_template.route_ids.ids:
+            #             dropship_already_enabled = True
 
-                    if not dropship_already_enabled:
-                        # Get existing routes and add dropshipping route
-                        existing_routes = existing_template.route_ids.ids if existing_template else []
-                        if dropship_route.id not in existing_routes:
-                            existing_routes.append(dropship_route.id)
-                        template_vals['route_ids'] = [(6, 0, existing_routes)]
-                        self._log_sync_message(f"Enabled dropshipping for product with vendor: {vendor_name}")
-                    else:
-                        self._log_sync_message(f"Dropshipping already enabled for product: {shopify_product['title']}")
-                else:
-                    self._log_sync_message("Dropshipping route not found - install stock_dropshipping module", 'warning')
-            except Exception as e:
-                self._log_sync_message(f"Error setting dropshipping route: {str(e)}", 'warning')
+            #         if not dropship_already_enabled:
+            #             # Get existing routes and add dropshipping route
+            #             existing_routes = existing_template.route_ids.ids if existing_template else []
+            #             if dropship_route.id not in existing_routes:
+            #                 existing_routes.append(dropship_route.id)
+            #             template_vals['route_ids'] = [(6, 0, existing_routes)]
+            #             self._log_sync_message(f"Enabled dropshipping for product with vendor: {vendor_name}")
+            #         else:
+            #             self._log_sync_message(f"Dropshipping already enabled for product: {shopify_product['title']}")
+            #     else:
+            #         self._log_sync_message("Dropshipping route not found - install stock_dropshipping module", 'warning')
+            # except Exception as e:
+            #     self._log_sync_message(f"Error setting dropshipping route: {str(e)}", 'warning')
 
         if existing_template:
             # Update existing product
