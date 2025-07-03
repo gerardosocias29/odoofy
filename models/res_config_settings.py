@@ -49,6 +49,9 @@ class ResConfigSettings(models.TransientModel):
         help='Automatically create a user portal for customers when enabled'
     )
 
+    shopify_product_sync_limit = fields.Integer(string="Shopify Product Sync Limit", help="Limit the number of products to sync from Shopify to Odoo at once")
+    shopify_order_sync_limit = fields.Integer(string="Shopify Order Sync Limit", help="Limit the number of orders to sync from Shopify to Odoo at once")
+
     @api.model
     def get_values(self):
         res = super(ResConfigSettings, self).get_values()

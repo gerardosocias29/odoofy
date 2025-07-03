@@ -34,7 +34,7 @@ Each task is implemented as a one-time callable method to support CRON automatio
         'stock',
         'purchase',
         'contacts',
-        'stock_dropshipping',
+        # 'stock_dropshipping',
         # 'website_sale',
     ],
     'data': [
