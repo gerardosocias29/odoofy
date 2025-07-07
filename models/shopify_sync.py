@@ -1458,17 +1458,12 @@ class ShopifySync(models.Model):
             amount_paid = float(shopify_order.get('total_price', 0)) if financial_status in ['paid', 'partially_paid'] else 0
 
             if financial_status == 'paid' or (financial_status == 'partially_paid' and amount_paid > 0):
-                # Try to get a payment method (skip if not found in Community)
-                payment_method = getattr(invoice.journal_id, 'inbound_payment_method_line_ids', False)
-                payment_method_id = payment_method[:1].id if payment_method and payment_method[:1] else False
-
                 payment_register_vals = {
                     'amount': invoice.amount_total if financial_status == 'paid' else amount_paid,
                     'payment_date': fields.Date.today(),
                     'journal_id': invoice.journal_id.id,
+                    # Do NOT set 'payment_method_line_id'
                 }
-                # if payment_method_id:
-                #     payment_register_vals['payment_method_line_id'] = payment_method_id
 
                 payment_register = self.env['account.payment.register'].with_context(
                     active_model='account.move', active_ids=invoice.ids
