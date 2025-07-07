@@ -1457,30 +1457,15 @@ class ShopifySync(models.Model):
             financial_status = shopify_order.get('financial_status', '').lower()
             amount_paid = float(shopify_order.get('total_price', 0)) if financial_status in ['paid', 'partially_paid'] else 0
 
-            # Find a default inbound payment method for the journal
-            payment_method = invoice.journal_id.inbound_payment_method_line_ids[:1]
-            if not payment_method:
-                # Fallback: try to find any journal with an inbound payment method
-                fallback_journal = self.env['account.journal'].search([
-                    ('type', '=', 'sale'),
-                    ('inbound_payment_method_line_ids', '!=', False)
-                ], limit=1)
-                if fallback_journal:
-                    payment_method = fallback_journal.inbound_payment_method_line_ids[:1]
-                    invoice.journal_id = fallback_journal.id
-            if not payment_method:
-                self._log_sync_message("No inbound payment method found for any sales journal. Payment not registered.", 'warning')
-            else:
-                payment_register_vals = {
-                    'amount': invoice.amount_total if financial_status == 'paid' else amount_paid,
-                    'payment_date': fields.Date.today(),
-                    'journal_id': invoice.journal_id.id,
-                    'payment_method_line_id': payment_method.id,
-                }
-                payment_register = self.env['account.payment.register'].with_context(
-                    active_model='account.move', active_ids=invoice.ids
-                ).create(payment_register_vals)
-                payment_register.action_create_payments()
+            payment_register_vals = {
+                'amount': invoice.amount_total if financial_status == 'paid' else amount_paid,
+                'payment_date': fields.Date.today(),
+                'journal_id': invoice.journal_id.id,
+            }
+            payment_register = self.env['account.payment.register'].with_context(
+                active_model='account.move', active_ids=invoice.ids
+            ).create(payment_register_vals)
+            payment_register.action_create_payments()
 
             if financial_status == 'paid':
                 self._log_sync_message(f"Full payment registered for invoice of order: {shopify_order.get('name')}")
