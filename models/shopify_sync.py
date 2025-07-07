@@ -483,27 +483,27 @@ class ShopifySync(models.Model):
                     pass
                 continue
 
-    def save_orders_to_odoo(self, orders):
-        """Save Shopify orders to Odoo"""
-        success_count = 0
-        for order in orders:
-            # Use a savepoint for each order to isolate transaction errors
-            try:
-                with self.env.cr.savepoint():
-                    self._save_single_order(order)
-                    success_count += 1
-            except Exception as e:
-                self._log_sync_message(f"Error saving order {order.get('name', 'Unknown')}: {str(e)}", 'error')
-                try:
-                    self.env.cr.rollback()
-                except Exception:
-                    pass
-                continue
+    # def save_orders_to_odoo(self, orders):
+    #     """Save Shopify orders to Odoo"""
+    #     success_count = 0
+    #     for order in orders:
+    #         # Use a savepoint for each order to isolate transaction errors
+    #         try:
+    #             with self.env.cr.savepoint():
+    #                 self._save_single_order(order)
+    #                 success_count += 1
+    #         except Exception as e:
+    #             self._log_sync_message(f"Error saving order {order.get('name', 'Unknown')}: {str(e)}", 'error')
+    #             try:
+    #                 self.env.cr.rollback()
+    #             except Exception:
+    #                 pass
+    #             continue
 
-        if success_count == len(orders):
-            self._log_sync_message(f"Successfully synced {len(orders)} orders in this batch")
-        else:
-            self._log_sync_message(f"Successfully synced {success_count} orders out of {len(orders)} in this batch", 'warning')
+    #     if success_count == len(orders):
+    #         self._log_sync_message(f"Successfully synced {len(orders)} orders in this batch")
+    #     else:
+    #         self._log_sync_message(f"Successfully synced {success_count} orders out of {len(orders)} in this batch", 'warning')
 
     def _save_single_product(self, shopify_product):
         """Save a single Shopify product to Odoo"""
@@ -1467,8 +1467,8 @@ class ShopifySync(models.Model):
                     'payment_date': fields.Date.today(),
                     'journal_id': invoice.journal_id.id,
                 }
-                if payment_method_id:
-                    payment_register_vals['payment_method_line_id'] = payment_method_id
+                # if payment_method_id:
+                #     payment_register_vals['payment_method_line_id'] = payment_method_id
 
                 payment_register = self.env['account.payment.register'].with_context(
                     active_model='account.move', active_ids=invoice.ids
