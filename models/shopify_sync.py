@@ -1452,6 +1452,31 @@ class ShopifySync(models.Model):
             invoice = self.env['account.move'].sudo().create(invoice_vals)
             invoice.action_post()
             self._log_sync_message(f"Invoice created for order: {shopify_order.get('name')}")
+
+            # Register payment based on financial status
+            financial_status = shopify_order.get('financial_status', '').lower()
+            amount_paid = float(shopify_order.get('total_price', 0)) if financial_status in ['paid', 'partially_paid'] else 0
+
+            if financial_status == 'paid':
+                # Register full payment
+                payment_register = self.env['account.payment.register'].with_context(active_model='account.move', active_ids=invoice.ids).create({
+                    'amount': invoice.amount_total,
+                    'payment_date': fields.Date.today(),
+                    'journal_id': invoice.journal_id.id,
+                })
+                payment_register.action_create_payments()
+                self._log_sync_message(f"Full payment registered for invoice of order: {shopify_order.get('name')}")
+            elif financial_status == 'partially_paid' and amount_paid > 0:
+                # Register partial payment
+                payment_register = self.env['account.payment.register'].with_context(active_model='account.move', active_ids=invoice.ids).create({
+                    'amount': amount_paid,
+                    'payment_date': fields.Date.today(),
+                    'journal_id': invoice.journal_id.id,
+                })
+                payment_register.action_create_payments()
+                self._log_sync_message(f"Partial payment ({amount_paid}) registered for invoice of order: {shopify_order.get('name')}")
+            else:
+                self._log_sync_message(f"No payment registered for invoice of order: {shopify_order.get('name')} (status: {financial_status})")
         else:
             self._log_sync_message(
                 f"Order {shopify_order.get('name')} has no order lines, skipping invoice creation.", 'warning'
