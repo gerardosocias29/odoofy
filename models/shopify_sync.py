@@ -1359,10 +1359,12 @@ class ShopifySync(models.Model):
             line_items = shopify_order.get('line_items', [])
             for line_item in line_items:
                 price = float(line_item.get('price', 0.0))
-                total_price = float(line_item.get('total_discount', 0.0))
-                if price > 0 and price == total_price:
+                discounted_price = float(line_item.get('discounted_price', price))
+                quantity = int(line_item.get('quantity', 0))
+                # Skip line items that are fully discounted/refunded
+                if quantity > 0 and price > 0 and discounted_price == 0.0:
                     self._log_sync_message(
-                        f"Skipping item {line_item.get('title')} due to full discount (swap/refund)."
+                        f"Skipping line item '{line_item.get('title')}' due to full discount/refund."
                     )
                     continue
                 
@@ -1439,11 +1441,12 @@ class ShopifySync(models.Model):
         line_items = shopify_order.get('line_items', [])
         for line_item in line_items:
             price = float(line_item.get('price', 0.0))
-            total_price = float(line_item.get('total_discount', 0.0))
-            # Skip if Shopify marked this item as 100% discounted AND quantity > 0
-            if price > 0 and price == total_price:
+            discounted_price = float(line_item.get('discounted_price', price))
+            quantity = int(line_item.get('quantity', 0))
+            # Skip line items that are fully discounted/refunded
+            if quantity > 0 and price > 0 and discounted_price == 0.0:
                 self._log_sync_message(
-                    f"Skipping item {line_item.get('title')} due to full discount (swap/refund)."
+                    f"Skipping line item '{line_item.get('title')}' due to full discount/refund."
                 )
                 continue
 
