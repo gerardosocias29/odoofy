@@ -1350,8 +1350,31 @@ class ShopifySync(models.Model):
         ], limit=1)
 
         if existing_order:
-            self._log_sync_message(f"Order {shopify_order.get('name')} already exists with ID: {existing_order.id,}, skipping")
+            # self._log_sync_message(f"Order {shopify_order.get('name')} already exists with ID: {existing_order.id,}, skipping")
+            # return existing_order
+
+            self._log_sync_message(f"Updating existing order {existing_order.name} from Shopify.")
+            existing_order.order_line.sudo().unlink()
+
+            line_items = shopify_order.get('line_items', [])
+            for line_item in line_items:
+                price = float(line_item.get('price', 0.0))
+                total_price = float(line_item.get('total_discount', 0.0))
+                if price > 0 and price == total_price:
+                    self._log_sync_message(
+                        f"Skipping item {line_item.get('title')} due to full discount (swap/refund)."
+                    )
+                    continue
+                
+                self._create_order_line(existing_order, line_item)
+
+            existing_order.sudo()._amount_all()
+
+            if existing_order.state == 'draft':
+                existing_order.sudo().action_confirm()
+
             return existing_order
+
 
         # Get or create customer
         customer = self._get_or_create_customer(shopify_order)
@@ -1415,6 +1438,15 @@ class ShopifySync(models.Model):
         # Add order lines
         line_items = shopify_order.get('line_items', [])
         for line_item in line_items:
+            price = float(line_item.get('price', 0.0))
+            total_price = float(line_item.get('total_discount', 0.0))
+            # Skip if Shopify marked this item as 100% discounted AND quantity > 0
+            if price > 0 and price == total_price:
+                self._log_sync_message(
+                    f"Skipping item {line_item.get('title')} due to full discount (swap/refund)."
+                )
+                continue
+
             self._create_order_line(sale_order, line_item)
 
         # skip sale order confirmation if no lines
@@ -1422,13 +1454,27 @@ class ShopifySync(models.Model):
             self._log_sync_message(f"Order {shopify_order.get('name')} has no order lines, skipping confirmation.", 'warning')
             return sale_order
 
-        # Confirm the sale order if not cancelled
-        if shopify_order.get('financial_status') != 'cancelled':
+        if shopify_order.get('financial_status') == 'cancelled':
+            sale_order.sudo().action_cancel()
+            self._log_sync_message(f"Order {shopify_order.get('name')} is cancelled, setting to cancel state.")
+        
+        elif shopify_order.get('financial_status') in ['refunded', 'voided']:
+            sale_order.sudo().action_cancel()
+            self._log_sync_message(f"Order {shopify_order.get('name')} is refunded/voided, setting to cancel state.")
+
+        elif shopify_order.get('financial_status') == 'paid':
             sale_order.sudo().action_confirm()
+
             self._log_sync_message(f"Shopify order data: {shopify_order}")
 
-        # Always create invoice if there are order lines
-        if sale_order.order_line:
+            # Check for order lines before creating invoice
+            if not sale_order.order_line:
+                self._log_sync_message(
+                    f"Order {shopify_order.get('name')} has no order lines, skipping invoice creation.", 'warning'
+                )
+                return sale_order
+
+            # Create invoice
             journal = sale_order.journal_id or self.env['account.journal'].search([('type', '=', 'sale')], limit=1)
             account = sale_order.partner_id.property_account_receivable_id
             account_id = account.id if account else False
@@ -1451,51 +1497,149 @@ class ShopifySync(models.Model):
             }
             invoice = self.env['account.move'].sudo().create(invoice_vals)
             invoice.action_post()
-            self._log_sync_message(f"Invoice created for order: {shopify_order.get('name')}")
 
-            # Register payment based on financial status
-            financial_status = shopify_order.get('financial_status', '').lower()
-            amount_paid = float(shopify_order.get('total_price', 0)) if financial_status in ['paid', 'partially_paid'] else 0
+            # --- Register payment with Shopify payment method ---
+            shopify_gateway = shopify_order.get('gateway', 'Shopify')
+            journal = self.env['account.journal'].sudo().search([
+                ('name', '=', shopify_gateway),
+                ('type', '=', 'bank')
+            ], limit=1)
+            if not journal:
+                journal = self.env['account.journal'].sudo().create({
+                    'name': shopify_gateway,
+                    'type': 'bank',
+                    'code': shopify_gateway[:5].upper(),
+                })
+                self._log_sync_message(f"Auto-created payment journal: {shopify_gateway}")
 
-            if financial_status == 'paid' or (financial_status == 'partially_paid' and amount_paid > 0):
-                # Find a valid inbound payment method for the journal
-                payment_method = invoice.journal_id.inbound_payment_method_line_ids[:1]
-                if not payment_method:
-                    # Fallback: try to find any journal with an inbound payment method
-                    fallback_journal = self.env['account.journal'].search([
-                        ('type', '=', 'sale'),
-                        ('inbound_payment_method_line_ids', '!=', False)
-                    ], limit=1)
-                    if fallback_journal:
-                        payment_method = fallback_journal.inbound_payment_method_line_ids[:1]
-                        invoice.journal_id = fallback_journal.id
-                if not payment_method:
-                    self._log_sync_message(
-                        f"No inbound payment method found for journal {invoice.journal_id.display_name}. Payment not registered.",
-                        'warning'
-                    )
-                else:
-                    payment_register_vals = {
-                        'amount': invoice.amount_total if financial_status == 'paid' else amount_paid,
-                        'payment_date': fields.Date.today(),
-                        'journal_id': invoice.journal_id.id,
-                        'payment_method_line_id': payment_method.id,
-                    }
-                    payment_register = self.env['account.payment.register'].with_context(
-                        active_model='account.move', active_ids=invoice.ids
-                    ).create(payment_register_vals)
-                    payment_register.action_create_payments()
+            payment = self.env['account.payment'].sudo().create({
+                'amount': invoice.amount_total,
+                'payment_type': 'inbound',
+                'partner_type': 'customer',
+                'partner_id': sale_order.partner_id.id,
+                'journal_id': journal.id,
+                'payment_method_id': self.env.ref('account.account_payment_method_manual_in').id,
+                'ref': sale_order.name,
+                'currency_id': sale_order.currency_id.id,
+            })
+            payment.action_post()
 
-                    if financial_status == 'paid':
-                        self._log_sync_message(f"Full payment registered for invoice of order: {shopify_order.get('name')}")
-                    else:
-                        self._log_sync_message(f"Partial payment ({amount_paid}) registered for invoice of order: {shopify_order.get('name')}")
-            else:
-                self._log_sync_message(f"No payment registered for invoice of order: {shopify_order.get('name')} (status: {financial_status})")
-        else:
-            self._log_sync_message(
-                f"Order {shopify_order.get('name')} has no order lines, skipping invoice creation.", 'warning'
+            # --- Improved reconciliation with logging ---
+            account = sale_order.partner_id.property_account_receivable_id
+            account_id = account.id if account else False
+            if not account.reconcile:
+                account.sudo().write({'reconcile': True})
+
+            lines_to_reconcile = (payment.move_id.line_ids + invoice.line_ids).filtered(
+                lambda l: l.account_id.id == account_id and not l.reconciled
             )
+            self._log_sync_message(
+                f"Reconciling lines for account {account.code if account else 'N/A'}: "
+                f"Payment lines: {[l.id for l in payment.move_id.line_ids]}, "
+                f"Invoice lines: {[l.id for l in invoice.line_ids]}"
+            )
+            if lines_to_reconcile:
+                lines_to_reconcile.reconcile()
+                self._log_sync_message(f"Reconciled lines: {[l.id for l in lines_to_reconcile]}")
+            else:
+                self._log_sync_message(
+                    f"No lines found to reconcile for account {account.code if account else 'N/A'}", 'warning'
+                )
+
+            # Log invoice payment state after reconciliation
+            self._log_sync_message(f"Invoice {invoice.name} payment_state after reconciliation: {invoice.payment_state}")
+
+            if invoice.payment_state != 'paid':
+                self._log_sync_message(
+                    f"WARNING: Invoice {invoice.name} is not marked as paid after reconciliation. "
+                    f"Payment amount: {payment.amount}, Invoice total: {invoice.amount_total}, "
+                    f"Partner: {sale_order.partner_id.name}, Currency: {sale_order.currency_id.name}", 'warning'
+                )
+
+            self._log_sync_message(f"Registered payment for invoice: {invoice.name} using journal: {journal.name}")
+
+            # Check ir.config_parameter before sending invoice
+            send_invoice = self.env['ir.config_parameter'].sudo().get_param('odoofy.send_invoice_on_payment')
+            if send_invoice == 'True' or send_invoice == True:
+                try:
+                    invoice.action_invoice_sent()
+                    self._log_sync_message(f"Invoice sent for order: {shopify_order.get('name')}")
+                except Exception as e:
+                    self._log_sync_message(f"Error sending invoice for order {shopify_order.get('name')}: {str(e)}", 'error')
+            else:
+                self._log_sync_message(f"Invoice not sent for order: {shopify_order.get('name')} due to configuration")
+
+            # Activate customer portal and notify customer
+            create_user_portal = self.env['ir.config_parameter'].sudo().get_param('odoofy.create_user_portal')
+            if create_user_portal == 'True' or create_user_portal == True:
+                try:
+                    user = self.env['res.users'].sudo().search([('partner_id', '=', sale_order.partner_id.id)], limit=1)
+                    if not user:
+                        # Create a new user for the customer
+                        user = self.env['res.users'].sudo().create({
+                            'login': sale_order.partner_id.email,
+                            'partner_id': sale_order.partner_id.id,
+                            'name': sale_order.partner_id.name,
+                            'email': sale_order.partner_id.email,
+                            'groups_id': [(6, 0, [self.env.ref('base.group_portal').id])],  # Assign portal group
+                            'active': True,
+                            'password': sale_order.partner_id.email,  # Set default password to email
+                        })
+                        self._log_sync_message(f"Created new portal user for customer: {sale_order.partner_id.name}")
+                    elif not user.active:
+                        user.sudo().write({'active': True})
+                        self._log_sync_message(f"Activated portal user for customer: {sale_order.partner_id.name}")
+
+                    # Send welcome email
+                    try:
+                        template_id = self.env.ref('portal.mail_template_data_portal_welcome').id
+                        self.env['mail.template'].sudo().browse(template_id).send_mail(user.id, force_send=True)
+                        self._log_sync_message(f"Sent portal welcome email to customer: {sale_order.partner_id.name}")
+                    except Exception as e:
+                        self._log_sync_message(f"Error sending portal welcome email to customer {sale_order.partner_id.name}: {str(e)}", 'error')
+
+                except Exception as e:
+                    self._log_sync_message(f"Error activating customer portal for order {shopify_order.get('name')}: {str(e)}", 'error')
+
+        elif shopify_order.get('financial_status') in ['pending', 'partially_paid']:
+            self._log_sync_message(f"Order {shopify_order.get('name')} is {shopify_order.get('financial_status')}, creating draft invoice.")
+
+            if sale_order.state != 'sale':
+                sale_order.sudo().action_confirm()
+                self._log_sync_message(f"Order {shopify_order.get('name')} was confirmed for invoicing.")
+
+            if not sale_order.order_line:
+                self._log_sync_message(f"Order {shopify_order.get('name')} has no order lines, skipping invoice creation.", 'warning')
+                return sale_order
+
+            journal = sale_order.journal_id or self.env['account.journal'].search([('type', '=', 'sale')], limit=1)
+            account = sale_order.partner_id.property_account_receivable_id
+            account_id = account.id if account else False
+
+            invoice_vals = {
+                'move_type': 'out_invoice',
+                'invoice_date': fields.Date.today(),
+                'partner_id': sale_order.partner_id.id,
+                'invoice_origin': sale_order.name,
+                'currency_id': sale_order.currency_id.id,
+                'invoice_line_ids': [(0, 0, {
+                    'name': line.name,
+                    'quantity': line.product_uom_qty,
+                    'price_unit': line.price_unit,
+                    'product_id': line.product_id.id,
+                    'account_id': line.product_id.property_account_income_id.id or line.product_id.categ_id.property_account_income_categ_id.id or account_id,
+                    'tax_ids': [(6, 0, line.tax_id.ids)],
+                    'sale_line_ids': [(6, 0, [line.id])],
+                }) for line in sale_order.order_line],
+            }
+
+            invoice = self.env['account.move'].sudo().create(invoice_vals)
+            self._log_sync_message(f"Created draft invoice {invoice.name} for order: {shopify_order.get('name')} with status: {shopify_order.get('financial_status')}")
+
+        else:
+            self._log_sync_message(f"Order {shopify_order.get('name')} is not paid, invoice will not be created.")
+
+        
 
         return sale_order
 
