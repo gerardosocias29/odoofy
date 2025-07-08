@@ -1352,9 +1352,12 @@ class ShopifySync(models.Model):
         if existing_order:
             # self._log_sync_message(f"Order {shopify_order.get('name')} already exists with ID: {existing_order.id,}, skipping")
             # return existing_order
-
             self._log_sync_message(f"Updating existing order {existing_order.name} from Shopify.")
-            existing_order.order_line.sudo().unlink()
+            if existing_order.state == 'draft':
+                existing_order.order_line.sudo().unlink()
+            else:
+                for line in existing_order.order_line:
+                    line.sudo().write({'product_uom_qty': 0})
 
             line_items = shopify_order.get('line_items', [])
             for line_item in line_items:
@@ -1369,8 +1372,6 @@ class ShopifySync(models.Model):
                     continue
                 
                 self._create_order_line(existing_order, line_item)
-
-            existing_order.sudo()._amount_all()
 
             if existing_order.state == 'draft':
                 existing_order.sudo().action_confirm()
