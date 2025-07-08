@@ -1350,9 +1350,8 @@ class ShopifySync(models.Model):
         ], limit=1)
 
         if existing_order:
-            # self._log_sync_message(f"Order {shopify_order.get('name')} already exists with ID: {existing_order.id,}, skipping")
-            # return existing_order
             self._log_sync_message(f"Updating existing order {existing_order.name} from Shopify.")
+
             if existing_order.state == 'draft':
                 existing_order.order_line.sudo().unlink()
             else:
@@ -1374,8 +1373,21 @@ class ShopifySync(models.Model):
                         f"Skipping line item '{line_item.get('title')}' due to full discount/refund."
                     )
                     continue
-                
+
                 self._create_order_line(existing_order, line_item)
+
+            # Cancel and delete any linked invoices
+            for inv in existing_order.invoice_ids.sudo():
+                try:
+                    self._log_sync_message(f"Cleaning invoice {inv.name} (state: {inv.state})")
+                    if inv.state == 'draft':
+                        inv.button_cancel()
+                        inv.unlink()
+                    elif inv.state == 'posted':
+                        inv.button_cancel()
+                        inv.unlink()
+                except Exception as e:
+                    self._log_sync_message(f"Failed to cancel/delete invoice {inv.name}: {str(e)}", 'error')
 
             if existing_order.state == 'draft':
                 existing_order.sudo().action_confirm()
