@@ -39,12 +39,12 @@ class ResConfigSettings(models.TransientModel):
         help='Automatically publish products fetched from Shopify on the Odoo website'
     )
 
-    send_invoice_on_payment = fields.Boolean(
+    send_invoice_on_payment = fields.Char(
         string='Send Invoice on Payment',
         help='Automatically send invoice to customer when order is paid'
     )
 
-    create_user_portal = fields.Boolean(
+    create_user_portal = fields.Char(
         string='Create User Portal',
         help='Automatically create a user portal for customers when enabled'
     )
@@ -65,8 +65,8 @@ class ResConfigSettings(models.TransientModel):
             shopify_auto_sync_orders=config_param.get_param('shopify.auto_sync_orders', False),
             shopify_auto_export_products=config_param.get_param('shopify.auto_export_products', False),
             shopify_auto_publish_website=config_param.get_param('shopify.auto_publish_website', False),
-            send_invoice_on_payment=config_param.get_param('odoofy.send_invoice_on_payment', False),
-            create_user_portal=config_param.get_param('odoofy.create_user_portal', False),
+            send_invoice_on_payment=config_param.get_param('odoofy.send_invoice_on_payment', 'False'),
+            create_user_portal=config_param.get_param('odoofy.create_user_portal', 'False'),
             shopify_product_sync_limit=config_param.get_param('shopify.product_sync_limit', ''),
             shopify_order_sync_limit=config_param.get_param('shopify.order_sync_limit', ''),
         )
