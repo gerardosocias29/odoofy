@@ -1342,7 +1342,6 @@ class ShopifySync(models.Model):
 
     def _save_single_order(self, shopify_order):
         """Save a single Shopify order to Odoo"""
-        # Check if order already exists
         shopify_order_id = str(shopify_order['id'])
         existing_order = self.env['sale.order'].sudo().search([
             ('client_order_ref', '=', f"SHOPIFY_ORDER_{shopify_order_id}"),
@@ -1350,6 +1349,10 @@ class ShopifySync(models.Model):
         ], limit=1)
 
         if existing_order:
+            if existing_order.invoice_ids.filtered(lambda i: i.state == 'posted'):
+                self._log_sync_message(f"Order {existing_order.name} already invoiced. Skipping reprocessing.")
+                return existing_order
+
             self._log_sync_message(f"Updating existing order {existing_order.name} from Shopify.")
 
             if existing_order.state != 'draft':
@@ -1362,26 +1365,6 @@ class ShopifySync(models.Model):
 
             existing_order.order_line.sudo().unlink()
 
-
-            # line_items = shopify_order.get('line_items', [])
-            # for line_item in line_items:
-            #     price = float(line_item.get('price', 0.0))
-            #     quantity = int(line_item.get('quantity', 1))
-            #     total_discount = float(line_item.get('total_discount', 0.0))
-
-            #     discounted_price = price
-            #     if quantity > 0:
-            #         discounted_price = (price * quantity - total_discount) / quantity
-
-            #     if quantity > 0 and price > 0 and discounted_price == 0.0:
-            #         self._log_sync_message(
-            #             f"Skipping line item '{line_item.get('title')}' due to full discount/refund."
-            #         )
-            #         continue
-
-            #     self._create_order_line(existing_order, line_item)
-
-            # Cancel and delete any linked invoices
             for inv in existing_order.invoice_ids.sudo():
                 try:
                     self._log_sync_message(f"Cleaning invoice {inv.name} (state: {inv.state})")
@@ -1397,74 +1380,61 @@ class ShopifySync(models.Model):
             if existing_order.state == 'draft':
                 existing_order.sudo().action_confirm()
 
-            # return existing_order
             order_to_process = existing_order
+        else:
+            created_at = shopify_order.get('created_at')
+            date_order = None
+            if created_at:
+                try:
+                    from datetime import datetime, timezone
+                    import pytz
+                    dt = datetime.fromisoformat(created_at)
+                    self._log_sync_message(
+                        f"Shopify Order {shopify_order.get('name')} original created_at (local): {dt.isoformat()}"
+                    )
+                    dt_utc = dt.astimezone(pytz.utc)
+                    date_order = fields.Datetime.to_string(dt_utc)
+                    self._log_sync_message(
+                        f"Shopify Order {shopify_order.get('name')} converted date_order (UTC for Odoo): {date_order}"
+                    )
+                except Exception as e:
+                    self._log_sync_message(
+                        f"Error parsing created_at for order {shopify_order.get('name')}: {str(e)}", 'warning'
+                    )
 
-        # Create sale order
-        created_at = shopify_order.get('created_at')
-        date_order = None
-        if created_at:
-            try:
-                from datetime import datetime, timezone
-                import pytz
-                dt = datetime.fromisoformat(created_at)
-                self._log_sync_message(
-                    f"Shopify Order {shopify_order.get('name')} original created_at (local): {dt.isoformat()}"
-                )
-                dt_utc = dt.astimezone(pytz.utc)
-                date_order = fields.Datetime.to_string(dt_utc)
+            shopify_order_number = shopify_order.get('name')
+            carrier_id = False
+            shipping_lines = shopify_order.get('shipping_lines', [])
+            if shipping_lines:
+                shipping_title = shipping_lines[0].get('title')
+                if shipping_title:
+                    carrier = self.env['delivery.carrier'].sudo().search([('name', '=', shipping_title)], limit=1)
+                    if not carrier:
+                        carrier = self.env['delivery.carrier'].sudo().create({
+                            'name': shipping_title,
+                            'delivery_type': 'fixed',
+                            'fixed_price': float(shipping_lines[0].get('price', 0.0)),
+                        })
+                        self._log_sync_message(f"Auto-created delivery method: {shipping_title}")
+                    carrier_id = carrier.id
 
-                # Log converted UTC datetime
-                self._log_sync_message(
-                    f"Shopify Order {shopify_order.get('name')} converted date_order (UTC for Odoo): {date_order}"
-                )
-            except Exception as e:
-                self._log_sync_message(
-                    f"Error parsing created_at for order {shopify_order.get('name')}: {str(e)}", 'warning'
-                )
+            customer = self._get_or_create_customer(shopify_order)
 
-        shopify_order_number = shopify_order.get('name')  # e.g. "#1001"
+            order_vals = {
+                'partner_id': customer.id,
+                'client_order_ref': f"SHOPIFY_ORDER_{shopify_order_id}",
+                'origin': shopify_order.get('name'),
+                'date_order': date_order,
+                'state': 'draft',
+                'currency_id': self._get_currency_id(shopify_order.get('currency', 'USD')),
+                'shopify_order_number': shopify_order_number,
+                'carrier_id': carrier_id,
+                'note': shopify_order.get('note', ''),
+            }
 
-        # --- Delivery Method Mapping ---
-        carrier_id = False
-        shipping_lines = shopify_order.get('shipping_lines', [])
-        if shipping_lines:
-            shipping_title = shipping_lines[0].get('title')
-            if shipping_title:
-                carrier = self.env['delivery.carrier'].sudo().search([('name', '=', shipping_title)], limit=1)
-                if not carrier:
-                    # Auto-create delivery method if not exists
-                    carrier = self.env['delivery.carrier'].sudo().create({
-                        'name': shipping_title,
-                        'delivery_type': 'fixed',  # or another type as needed
-                        'fixed_price': float(shipping_lines[0].get('price', 0.0)),
-                    })
-                    self._log_sync_message(f"Auto-created delivery method: {shipping_title}")
-                carrier_id = carrier.id
-
-        # Get or create customer
-        customer = self._get_or_create_customer(shopify_order)
-
-        order_vals = {
-            'partner_id': customer.id,
-            'client_order_ref': f"SHOPIFY_ORDER_{shopify_order_id}",
-            'origin': shopify_order.get('name'),
-            'date_order': date_order,
-            'state': 'draft',
-            'currency_id': self._get_currency_id(shopify_order.get('currency', 'USD')),
-            'shopify_order_number': shopify_order_number,
-            'carrier_id': carrier_id,  # <-- assign carrier if found/created
-            'note': shopify_order.get('note', ''),
-        }
-
-        if not existing_order:
             sale_order = self.env['sale.order'].sudo().create(order_vals)
             order_to_process = sale_order
 
-        # sale_order = self.env['sale.order'].sudo().create(order_vals)
-        # order_to_process = sale_order
-
-        # Add order lines
         line_items = shopify_order.get('line_items', [])
         for line_item in line_items:
             price = float(line_item.get('price', 0.0))
@@ -1483,34 +1453,24 @@ class ShopifySync(models.Model):
 
             self._create_order_line(order_to_process, line_item)
 
-        # skip sale order confirmation if no lines
         if not order_to_process.order_line:
             self._log_sync_message(f"Order {shopify_order.get('name')} has no order lines, skipping confirmation.", 'warning')
             return order_to_process
 
-        if shopify_order.get('financial_status') == 'cancelled':
-            order_to_process.sudo().action_cancel()
-            self._log_sync_message(f"Order {shopify_order.get('name')} is cancelled, setting to cancel state.")
-        
-        elif shopify_order.get('financial_status') in ['refunded', 'voided']:
-            order_to_process.sudo().action_cancel()
-            self._log_sync_message(f"Order {shopify_order.get('name')} is refunded/voided, setting to cancel state.")
+        financial_status = shopify_order.get('financial_status')
 
-        elif shopify_order.get('financial_status') == 'paid':
+        if financial_status in ['cancelled', 'refunded', 'voided']:
+            order_to_process.sudo().action_cancel()
+            self._log_sync_message(f"Order {shopify_order.get('name')} is {financial_status}, setting to cancel state.")
+
+        elif financial_status == 'paid':
             if order_to_process.state == 'draft':
                 order_to_process.sudo().action_confirm()
                 self._log_sync_message(f"Confirmed order {order_to_process.name} (Shopify: {shopify_order.get('name')})")
             else:
                 self._log_sync_message(f"Order {order_to_process.name} already confirmed, skipping action_confirm()")
 
-            self._log_sync_message(f"Shopify order data: {shopify_order}")
-
-            # Check for order lines before creating invoice
-            if not order_to_process.order_line:
-                self._log_sync_message(
-                    f"Order {shopify_order.get('name')} has no order lines, skipping invoice creation.", 'warning'
-                )
-                return order_to_process
+            # self._process_invoice_and_payment(order_to_process, shopify_order)
 
             # Create invoice
             journal = order_to_process.journal_id or self.env['account.journal'].search([('type', '=', 'sale')], limit=1)
@@ -1533,10 +1493,10 @@ class ShopifySync(models.Model):
                     'sale_line_ids': [(6, 0, [line.id])],
                 }) for line in order_to_process.order_line],
             }
+
             invoice = self.env['account.move'].sudo().create(invoice_vals)
             invoice.action_post()
 
-            # --- Register payment with Shopify payment method ---
             shopify_gateway = shopify_order.get('gateway', 'Shopify')
             journal = self.env['account.journal'].sudo().search([
                 ('name', '=', shopify_gateway),
@@ -1562,9 +1522,6 @@ class ShopifySync(models.Model):
             })
             payment.action_post()
 
-            # --- Improved reconciliation with logging ---
-            account = order_to_process.partner_id.property_account_receivable_id
-            account_id = account.id if account else False
             if not account.reconcile:
                 account.sudo().write({'reconcile': True})
 
@@ -1584,7 +1541,6 @@ class ShopifySync(models.Model):
                     f"No lines found to reconcile for account {account.code if account else 'N/A'}", 'warning'
                 )
 
-            # Log invoice payment state after reconciliation
             self._log_sync_message(f"Invoice {invoice.name} payment_state after reconciliation: {invoice.payment_state}")
 
             if invoice.payment_state != 'paid':
@@ -1596,9 +1552,8 @@ class ShopifySync(models.Model):
 
             self._log_sync_message(f"Registered payment for invoice: {invoice.name} using journal: {journal.name}")
 
-            # Check ir.config_parameter before sending invoice
             send_invoice = self.env['ir.config_parameter'].sudo().get_param('odoofy.send_invoice_on_payment')
-            if send_invoice == 'True' or send_invoice == True:
+            if send_invoice == 'True' or send_invoice is True:
                 try:
                     invoice.action_invoice_sent()
                     self._log_sync_message(f"Invoice sent for order: {shopify_order.get('name')}")
@@ -1607,28 +1562,25 @@ class ShopifySync(models.Model):
             else:
                 self._log_sync_message(f"Invoice not sent for order: {shopify_order.get('name')} due to configuration")
 
-            # Activate customer portal and notify customer
             create_user_portal = self.env['ir.config_parameter'].sudo().get_param('odoofy.create_user_portal')
-            if create_user_portal == 'True' or create_user_portal == True:
+            if create_user_portal == 'True' or create_user_portal is True:
                 try:
                     user = self.env['res.users'].sudo().search([('partner_id', '=', order_to_process.partner_id.id)], limit=1)
                     if not user:
-                        # Create a new user for the customer
                         user = self.env['res.users'].sudo().create({
                             'login': order_to_process.partner_id.email,
                             'partner_id': order_to_process.partner_id.id,
                             'name': order_to_process.partner_id.name,
                             'email': order_to_process.partner_id.email,
-                            'groups_id': [(6, 0, [self.env.ref('base.group_portal').id])],  # Assign portal group
+                            'groups_id': [(6, 0, [self.env.ref('base.group_portal').id])],
                             'active': True,
-                            'password': order_to_process.partner_id.email,  # Set default password to email
+                            'password': order_to_process.partner_id.email,
                         })
                         self._log_sync_message(f"Created new portal user for customer: {order_to_process.partner_id.name}")
                     elif not user.active:
                         user.sudo().write({'active': True})
                         self._log_sync_message(f"Activated portal user for customer: {order_to_process.partner_id.name}")
 
-                    # Send welcome email
                     try:
                         template_id = self.env.ref('portal.mail_template_data_portal_welcome').id
                         self.env['mail.template'].sudo().browse(template_id).send_mail(user.id, force_send=True)
@@ -1638,9 +1590,9 @@ class ShopifySync(models.Model):
 
                 except Exception as e:
                     self._log_sync_message(f"Error activating customer portal for order {shopify_order.get('name')}: {str(e)}", 'error')
-
-        elif shopify_order.get('financial_status') in ['pending', 'partially_paid']:
-            self._log_sync_message(f"Order {shopify_order.get('name')} is {shopify_order.get('financial_status')}, creating draft invoice.")
+                    
+        elif financial_status in ['pending', 'partially_paid']:
+            self._log_sync_message(f"Order {shopify_order.get('name')} is {financial_status}, creating draft invoice.")
 
             if order_to_process.state == 'draft':
                 order_to_process.sudo().action_confirm()
@@ -1652,6 +1604,7 @@ class ShopifySync(models.Model):
                 self._log_sync_message(f"Order {shopify_order.get('name')} has no order lines, skipping invoice creation.", 'warning')
                 return order_to_process
 
+            # self._create_draft_invoice(order_to_process)
             journal = order_to_process.journal_id or self.env['account.journal'].search([('type', '=', 'sale')], limit=1)
             account = order_to_process.partner_id.property_account_receivable_id
             account_id = account.id if account else False
@@ -1674,14 +1627,13 @@ class ShopifySync(models.Model):
             }
 
             invoice = self.env['account.move'].sudo().create(invoice_vals)
-            self._log_sync_message(f"Created draft invoice {invoice.name} for order: {shopify_order.get('name')} with status: {shopify_order.get('financial_status')}")
+            self._log_sync_message(f"Created draft invoice {invoice.name} for order: {shopify_order.get('name')} with status: {financial_status}")
 
         else:
             self._log_sync_message(f"Order {shopify_order.get('name')} is not paid, invoice will not be created.")
 
-        
-
         return order_to_process
+
 
     def _get_or_create_customer(self, shopify_order):
         """Get or create customer from Shopify order"""

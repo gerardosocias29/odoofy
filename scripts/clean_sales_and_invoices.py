@@ -1,3 +1,5 @@
+# exec(open('addons/odoofy/scripts/clean_sales_and_invoices.py').read())
+
 print("💣 Executing raw SQL deletes to wipe Sales Orders and Invoices...")
 
 cr = env.cr
