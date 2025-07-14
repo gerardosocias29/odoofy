@@ -8,6 +8,7 @@ import logging
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, AccessError
 from odoo.tools import plaintext2html
+import json
 
 _logger = logging.getLogger(__name__)
 
@@ -1348,6 +1349,9 @@ class ShopifySync(models.Model):
             ('state', '!=', 'cancel')
         ], limit=1)
 
+        # dump shopify order
+        # self._log_sync_message(f"FULL ORDER JSON:\n{json.dumps(shopify_order, indent=2)}")
+
         if existing_order:
             if existing_order.invoice_ids.filtered(lambda i: i.state == 'posted'):
                 self._log_sync_message(f"Order {existing_order.name} already invoiced. Skipping reprocessing.")
@@ -1380,7 +1384,39 @@ class ShopifySync(models.Model):
             if existing_order.state == 'draft':
                 existing_order.sudo().action_confirm()
 
+            note = shopify_order.get('customer', {}).get('note', '')
+            tags_string = shopify_order.get("customer", {}).get("tags", "")
+            tag_ids = []
+            if tags_string:
+                tag_names = [tag.strip() for tag in tags_string.split(',')]
+                tag_model = self.env['crm.tag'].sudo()
+                for name in tag_names:
+                    tag = tag_model.search([('name', '=', name)], limit=1)
+                    if not tag:
+                        tag = tag_model.create({'name': name})
+                    tag_ids.append(tag.id)
+
             order_to_process = existing_order
+
+            existing_order.sudo().write({
+                'note': plaintext2html(note) if note else '',
+                'tag_ids': [(6, 0, tag_ids)],
+            })
+
+            if note:
+                clean_note_html = f"<b>Note:</b><br>{note}"
+
+                # Filter existing Shopify notes to delete
+                existing_notes = existing_order.message_ids.filtered(
+                    lambda m: m.subtype_id.get_external_id().get(m.subtype_id.id, '').endswith('mail.mt_note') and 'Note' in (m.body or '')
+                )
+                if existing_notes:
+                    existing_notes.unlink()  
+
+                existing_order.sudo().message_post(
+                    body=clean_note_html,
+                    subtype_xmlid='mail.mt_note'
+                )
         else:
             created_at = shopify_order.get('created_at')
             date_order = None
@@ -1420,6 +1456,18 @@ class ShopifySync(models.Model):
 
             customer = self._get_or_create_customer(shopify_order)
 
+            note = shopify_order.get('customer', {}).get('note', '')
+            tags_string = shopify_order.get("customer", {}).get("tags", "")
+            tag_ids = []
+            if tags_string:
+                tag_names = [tag.strip() for tag in tags_string.split(',')]
+                tag_model = self.env['crm.tag'].sudo()
+                for name in tag_names:
+                    tag = tag_model.search([('name', '=', name)], limit=1)
+                    if not tag:
+                        tag = tag_model.create({'name': name})
+                    tag_ids.append(tag.id)
+
             order_vals = {
                 'partner_id': customer.id,
                 'client_order_ref': f"SHOPIFY_ORDER_{shopify_order_id}",
@@ -1429,10 +1477,18 @@ class ShopifySync(models.Model):
                 'currency_id': self._get_currency_id(shopify_order.get('currency', 'USD')),
                 'shopify_order_number': shopify_order_number,
                 'carrier_id': carrier_id,
-                'note': shopify_order.get('note', ''),
+                'note': plaintext2html(note) if note else '',
+                'tag_ids': [(6, 0, tag_ids)],
             }
 
             sale_order = self.env['sale.order'].sudo().create(order_vals)
+
+            if note:
+                sale_order.sudo().message_post(
+                    body=f"<b>Note:</b><br>{note}",
+                    subtype_xmlid='mail.mt_note'
+                )
+
             order_to_process = sale_order
 
         line_items = shopify_order.get('line_items', [])
