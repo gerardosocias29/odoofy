@@ -1682,7 +1682,43 @@ class ShopifySync(models.Model):
                 }) for line in order_to_process.order_line],
             }
 
-            invoice = self.env['account.move'].sudo().create(invoice_vals)
+            existing_draft_invoice = self.env['account.move'].sudo().search([
+                ('move_type', '=', 'out_invoice'),
+                ('state', '=', 'draft'),
+                ('invoice_origin', '=', order_to_process.name),
+                ('partner_id', '=', order_to_process.partner_id.id),
+            ], limit=1)
+
+            if existing_draft_invoice:
+                self._log_sync_message(f"Draft invoice already exists for order {order_to_process.name}, proceed with update.")
+                self._log_sync_message(f"Updating existing draft invoice {existing_draft_invoice[0].name} for order {order_to_process.name}")
+                invoice = existing_draft_invoice[0]
+
+                invoice.invoice_line_ids.unlink()
+
+                new_lines = [(0, 0, {
+                    'name': line.name,
+                    'quantity': line.product_uom_qty,
+                    'price_unit': line.price_unit,
+                    'product_id': line.product_id.id,
+                    'account_id': line.product_id.property_account_income_id.id or line.product_id.categ_id.property_account_income_categ_id.id or account_id,
+                    'tax_ids': [(6, 0, line.tax_id.ids)],
+                    'sale_line_ids': [(6, 0, [line.id])],
+                }) for line in order_to_process.order_line]
+
+                if new_lines:
+                    invoice.write({
+                        'invoice_line_ids': new_lines,
+                        'invoice_origin': order_to_process.name,
+                        'currency_id': order_to_process.currency_id.id,
+                        'partner_id': order_to_process.partner_id.id,
+                    })
+
+            else:
+                invoice = self.env['account.move'].sudo().create(invoice_vals)
+                self._log_sync_message(f"Created draft invoice {invoice.name} for order: {shopify_order.get('name')}")
+            # invoice = self.env['account.move'].sudo().create(invoice_vals)
+            
             self._log_sync_message(f"Created draft invoice {invoice.name} for order: {shopify_order.get('name')} with status: {financial_status}")
 
         else:
