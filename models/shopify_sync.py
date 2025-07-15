@@ -1550,8 +1550,47 @@ class ShopifySync(models.Model):
                 }) for line in order_to_process.order_line],
             }
 
-            invoice = self.env['account.move'].sudo().create(invoice_vals)
-            invoice.action_post()
+            # invoice = self.env['account.move'].sudo().create(invoice_vals)
+            # invoice.action_post()
+
+            existing_invoice = self.env['account.move'].sudo().search([
+                ('move_type', '=', 'out_invoice'),
+                ('state', 'in', ['draft', 'posted']),
+                ('invoice_origin', '=', order_to_process.name),
+                ('partner_id', '=', order_to_process.partner_id.id),
+            ], limit=1)
+
+            if existing_invoice:
+                self._log_sync_message(f"Invoice already exists for order {order_to_process.name}, updating instead.")
+                invoice = existing_invoice
+
+                if invoice.state == 'draft':
+                    invoice.invoice_line_ids.unlink()
+
+                    new_lines = [(0, 0, {
+                        'name': line.name,
+                        'quantity': line.product_uom_qty,
+                        'price_unit': line.price_unit,
+                        'product_id': line.product_id.id,
+                        'account_id': line.product_id.property_account_income_id.id or line.product_id.categ_id.property_account_income_categ_id.id or account_id,
+                        'tax_ids': [(6, 0, line.tax_id.ids)],
+                        'sale_line_ids': [(6, 0, [line.id])],
+                    }) for line in order_to_process.order_line]
+
+                    invoice.write({
+                        'invoice_line_ids': new_lines,
+                        'invoice_origin': order_to_process.name,
+                        'currency_id': order_to_process.currency_id.id,
+                        'partner_id': order_to_process.partner_id.id,
+                    })
+                    invoice.action_post()
+                    self._log_sync_message(f"Updated and posted existing invoice {invoice.name}")
+                else:
+                    self._log_sync_message(f"Invoice {invoice.name} already posted, skipping recreation.")
+            else:
+                invoice = self.env['account.move'].sudo().create(invoice_vals)
+                invoice.action_post()
+                self._log_sync_message(f"Created and posted new invoice {invoice.name}")
 
             shopify_gateway = shopify_order.get('gateway', 'Shopify')
             journal = self.env['account.journal'].sudo().search([
