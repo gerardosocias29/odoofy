@@ -1381,6 +1381,13 @@ class ShopifySync(models.Model):
                 except Exception as e:
                     self._log_sync_message(f"Failed to cancel/delete invoice {inv.name}: {str(e)}", 'error')
 
+            for picking in existing_order.picking_ids:
+                if picking.state in ['draft', 'cancel']:
+                    picking.unlink()
+                else:
+                    picking.action_cancel()
+                    picking.unlink()
+                    
             if existing_order.state == 'draft':
                 existing_order.sudo().action_confirm()
 
